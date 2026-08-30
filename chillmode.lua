@@ -841,6 +841,18 @@ local function unload()
   for i = 1, #live.rules do pcall(function() live.rules[i]:set_enabled(false) end) end
   if live.key then pcall(hl.unbind, live.key) end
   live = { subs = {}, rules = {}, key = nil }
+  -- Leaving for good (plugin disabled/removed) rather than about to be
+  -- re-injected: if nothing is chilled any more, hand back the globals we
+  -- switched on and drop the state file, so nothing of ours outlives us.
+  pcall(function()
+    local wins = hl.get_windows()
+    if type(wins) ~= "table" then return end
+    for i = 1, #wins do
+      if has_tag(wins[i]) then return end
+    end
+    chill_globals_pop()
+  end)
+  _G.chillmode = nil
 end
 
 _G.chillmode = { toggle = toggle, state = state, unload = unload, version = "1.0.0" }

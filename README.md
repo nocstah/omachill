@@ -18,6 +18,10 @@ Only the workspace you press it on changes. Everything else is left alone.
 omarchy plugin add https://github.com/nocstah/omachill --enable
 ```
 
+If the `--enable` half answers `omarchy-shell is not responding` (the shell
+was still reloading plugins), the plugin is installed — just run
+`omarchy plugin enable io.github.nocstah.omachill` once more.
+
 That is the whole install. The plugin ships its engine as Hyprland Lua and
 injects it into the running compositor itself (`hyprctl eval`), on shell start
 and again after every `hyprctl reload`. **Nothing is written into

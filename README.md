@@ -55,6 +55,14 @@ hyprctl eval 'chillmode.toggle(3)'     # workspace 3
 Every toggle emits a Hyprland custom event `custom>>chillmode <workspace> on|off`
 on the event socket, and `chillmode.state()` returns `{ [workspace] = count }`.
 
+## Known issue (not this plugin's)
+
+On quickshell 0.3.1 / Omarchy 4.0.x, any write under `~/.config/omarchy/plugins/`
+while the session is **locked** — installing, updating or editing any plugin —
+can abort the shell (`FATAL: Tried to show lockscreen surfaces without active
+lock`, Omarchy issue #8647 / quickshell #975, fixed upstream). The shell restarts
+itself, but install and update this plugin with the screen unlocked.
+
 ## Requirements
 
 Omarchy with the Lua-configured Hyprland (0.56+). Blur is switched on while a

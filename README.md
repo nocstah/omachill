@@ -71,9 +71,15 @@ itself, but install and update this plugin with the screen unlocked.
 ## Requirements
 
 Omarchy with the Lua-configured Hyprland (0.56+). Blur is switched on while a
-workspace is chilled and put back afterwards; the glass shows the wallpaper,
-not the windows underneath (compositor opacity stays at 1.0 by design — see
-the comments in `chillmode.lua` for why).
+workspace is chilled and put back afterwards.
+
+**About the glass.** Chilled windows are held fully opaque at the compositor
+level (see the comments in `chillmode.lua` for why), so the frosted look only
+appears through pixels the *application itself* draws translucent — a terminal
+with `alpha`/`opacity` below 1 in its own config (foot, alacritty, ghostty,
+kitty all support this). Opaque apps such as browsers get the inset floating
+layout, soft corners and shadows, without the glass. The screenshots above use
+foot at alpha 0.76 (dark) / 0.88 (light).
 
 ## License
 

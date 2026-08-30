@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.nocstah.omachill",
+  "name": "Omachill",
+  "version": "1.0.0",
+  "author": "Ronny Iversen",
+  "license": "MIT",
+  "description": "Float every window on the current workspace in place, with glass and soft corners; press again to tile them back exactly where they were.",
+  "kinds": ["service", "bar-widget"],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Omachill",
+    "description": "Shows when the active workspace is chilled; click to toggle.",
+    "category": "Utilities",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "keybind": "SUPER + SHIFT + C",
+      "inset": 10,
+      "size": 72,
+      "rounding": 14,
+      "notify": true,
+      "hideWhenIdle": false
+    },
+    "schema": [
+      { "key": "keybind", "type": "string", "label": "Toggle key", "description": "Hyprland bind string for toggling chill mode on the current workspace (empty = no key). Omarchy's Calendar webapp sits on the default; it is unbound while this plugin is enabled.", "defaultValue": "SUPER + SHIFT + C" },
+      { "key": "inset", "type": "integer", "label": "Inset (%)", "description": "Each chilled window pulls in by this much of its own size on every side. 10 keeps 80% of width and height.", "min": 0, "max": 30, "step": 1, "defaultValue": 10 },
+      { "key": "size", "type": "integer", "label": "Newcomer size (%)", "description": "Size of a window arriving on a chilled workspace that has nothing to copy from, as a percentage of the work area.", "min": 30, "max": 100, "step": 1, "defaultValue": 72 },
+      { "key": "rounding", "type": "integer", "label": "Corner radius", "description": "Rounding applied to chilled windows.", "min": 0, "max": 40, "step": 1, "defaultValue": 14 },
+      { "key": "notify", "type": "boolean", "label": "Notify on toggle", "description": "Show a desktop notification when a workspace is chilled or tiled back.", "defaultValue": true },
+      { "key": "hideWhenIdle", "type": "boolean", "label": "Hide widget when nothing is chilled", "description": "Only show the bar icon while the active workspace is chilled.", "defaultValue": false }
+    ]
+  },
+  "homepage": "https://github.com/nocstah/omachill",
+  "repository": "https://github.com/nocstah/omachill"
+}

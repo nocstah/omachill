@@ -7,6 +7,11 @@ preserved, the visible change is the air around each window.
 
 Only the workspace you press it on changes. Everything else is left alone.
 
+| Tiled | Chilled |
+| :---: | :---: |
+| ![Light theme, tiled](docs/screenshots/light-tiled.png) | ![Light theme, chilled](docs/screenshots/light-chilled.png) |
+| ![Dark theme, tiled](docs/screenshots/dark-tiled.png) | ![Dark theme, chilled](docs/screenshots/dark-chilled.png) |
+
 ## Install
 
 ```bash

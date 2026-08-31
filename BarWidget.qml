@@ -1,4 +1,4 @@
-// Omachill — bar widget. A snowflake that lights up while the workspace
+// Omachill — bar widget. A sofa that lights up (blue) while the workspace
 // shown on THIS monitor is chilled; click to chill / tile back.
 //
 // State comes from the engine: `custom>>chillmode <ws> on|off` events on the
@@ -99,8 +99,9 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "󰜗"
+    text: "󰒹"  // nf-md-sofa
     active: root.active
+    activeColor: "#3b82f6"
     tooltipText: root.active
       ? "Chill mode on workspace " + root.wsName + " (" + root.count + (root.count === 1 ? " window" : " windows") + ") — click to tile back"
       : "Click to chill workspace " + root.wsName

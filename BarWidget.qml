@@ -1,4 +1,4 @@
-// Omachill — bar widget. A sofa that lights up (blue) while the workspace
+// Omachill — bar widget. A sofa that lights up (theme blue) while the workspace
 // shown on THIS monitor is chilled; click to chill / tile back.
 //
 // State comes from the engine: `custom>>chillmode <ws> on|off` events on the
@@ -18,6 +18,38 @@ BarWidget {
   moduleName: "io.github.nocstah.omachill"
 
   readonly property bool hideWhenIdle: setting("hideWhenIdle", false) === true
+
+  // The theme's blue, read straight from the active theme's colors.toml the
+  // same way qs.Commons Color reads its keys (Color itself only exposes
+  // foreground/accent/urgent/muted). Fallbacks: explicit `blue`, else ANSI
+  // `color4` (the conventional blue), else the theme accent, else a fixed
+  // blue. Re-read whenever Color's base palette changes — that is the signal
+  // that a theme switch just re-parsed the same file.
+  property color themeBlue: "#3b82f6"
+  function parseThemeBlue(raw) {
+    const lines = String(raw || "").split("\n")
+    let blue = "", c4 = ""
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(/^\s*([A-Za-z0-9_-]+)\s*=\s*["']?(#[0-9A-Fa-f]{6})/)
+      if (!m) continue
+      if (m[1] === "blue") blue = m[2]
+      else if (m[1] === "color4") c4 = m[2]
+    }
+    themeBlue = blue || c4 || (Color.accent ? String(Color.accent) : "#3b82f6")
+  }
+  FileView {
+    id: themeColorsFile
+    path: Color.currentThemePath + "/colors.toml"
+    watchChanges: false
+    printErrors: false
+    onLoaded: root.parseThemeBlue(text())
+    onLoadFailed: root.parseThemeBlue("")
+  }
+  Connections {
+    target: Color
+    function onAccentChanged() { themeColorsFile.reload() }
+    function onForegroundChanged() { themeColorsFile.reload() }
+  }
 
   // { workspaceName: chilledWindowCount }
   property var chilled: ({})
@@ -101,7 +133,7 @@ BarWidget {
     bar: root.bar
     text: "󰒹"  // nf-md-sofa
     active: root.active
-    activeColor: "#3b82f6"
+    activeColor: root.themeBlue
     tooltipText: root.active
       ? "Chill mode on workspace " + root.wsName + " (" + root.count + (root.count === 1 ? " window" : " windows") + ") — click to tile back"
       : "Click to chill workspace " + root.wsName

@@ -1,16 +1,36 @@
-// Omachill — service half. Puts chillmode.lua into the running Hyprland
-// with `hyprctl eval` and keeps it there.
+// Omachill — service half. Keeps chillmode.lua loaded in the running
+// Hyprland.
 //
-//   shell start / plugin (re)load   -> inject (retry while Hyprland is not ready)
-//   Hyprland `configreloaded`       -> inject again (a reload wipes runtime
-//                                      binds, hooks and window rules)
-//   widget settings change          -> inject again with the new options
-//                                      (the engine is re-entrant: it unloads
-//                                      its previous registration first)
-//   plugin disabled / shell exit    -> chillmode.unload()
+// A `hyprctl reload` rebuilds Hyprland's Lua state from the config files and
+// nothing else: every runtime global, hook, bind and rule is gone, so an
+// engine that was only ever injected cannot outlive a reload, and at session
+// start several reloads fire before the shell's event socket is even
+// connected (2026-09-02: shell said injected, compositor had no engine).
+// The config therefore loads the engine itself:
 //
-// Nothing is written into ~/.config/hypr. The engine's only persistent state
-// is the "chillmode" window tag, which lives in the compositor.
+//   ~/.config/hypr/omachill.lua       written here on every start and on
+//                                     every settings change: the options,
+//                                     then dofile(chillmode.lua). Removed
+//                                     when this service goes away.
+//   ~/.config/hypr/hyprland.lua       one guarded line appended once (marked
+//                                     block), dofile()ing the loader if it
+//                                     exists. That is the only edit ever
+//                                     made to a user file.
+//
+//   shell start / plugin (re)load   -> write loader, ensure the include,
+//                                      `hyprctl eval dofile(loader)` for
+//                                      immediate effect (retry while
+//                                      Hyprland is not ready)
+//   any `hyprctl reload`            -> the config re-runs the loader; the
+//                                      `configreloaded` event additionally
+//                                      re-injects, which is a no-op in
+//                                      effect (the engine is re-entrant)
+//   widget settings change          -> rewrite the loader, inject again
+//   plugin disabled / shell exit    -> chillmode.unload() (only our own
+//                                      engine), loader removed
+//
+// The engine's only persistent state is the "chillmode" window tag, which
+// lives in the compositor.
 import QtQuick
 import Quickshell
 import Quickshell.Io
@@ -36,10 +56,21 @@ Item {
     return url.replace(/^file:\/\//, "").replace(/\/$/, "")
   }
   readonly property string enginePath: sourceDir + "/chillmode.lua"
+  readonly property string loaderPath: Quickshell.env("HOME") + "/.config/hypr/omachill.lua"
+  readonly property string hyprlandLua: Quickshell.env("HOME") + "/.config/hypr/hyprland.lua"
 
   property string lastOpts: ""
   property int attempts: 0
   property bool injected: false
+
+  // One stamp per Service instance, handed to the engine and checked by the
+  // unload below. When the shell hot-reloads this plugin (any write under
+  // its directory), the old instance's detached `chillmode.unload()` races
+  // the new instance's inject — and when it loses, it tears down the fresh
+  // engine: no key, no bar toggle, and the next `hyprctl reload` hands
+  // SUPER + SHIFT + C back to the Calendar webapp. Seen 2026-09-02. With the
+  // stamp, a stale unload finds a newer engine and leaves it alone.
+  readonly property string generation: String(Date.now()) + "-" + String(Math.floor(Math.random() * 1e9))
 
   // ---- settings -----------------------------------------------------------
   // A service gets no `settings`; read the widget's entry out of shell.json
@@ -85,16 +116,44 @@ Item {
   function luaOpts(s) {
     return "CHILLMODE_OPTS = { keybind = " + luaString(s.keybind)
       + ", inset = " + s.inset + ", size = " + s.size + ", rounding = " + s.rounding
-      + ", notify = " + (s.notify ? "true" : "false") + " }"
+      + ", notify = " + (s.notify ? "true" : "false")
+      + ", generation = " + luaString(generation) + " }"
   }
 
   // ---- injection ----------------------------------------------------------
+  function shellQuote(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'" }
+
+  // The loader Hyprland's config runs on every reload.
+  function loaderText(opts) {
+    return "-- Omachill (io.github.nocstah.omachill) — written by the shell plugin on\n"
+      + "-- every start and settings change, removed when it is disabled. Loaded\n"
+      + "-- from hyprland.lua so the chill-mode engine is re-created on every\n"
+      + "-- `hyprctl reload`, which rebuilds Hyprland's Lua state from scratch.\n"
+      + "-- Do not edit: settings live in the bar widget (shell.json).\n"
+      + opts + "\n"
+      + "local engine = " + luaString(enginePath) + "\n"
+      + "local f = io.open(engine, \"r\")\n"
+      + "if f then f:close() dofile(engine) end\n"
+  }
+
+  // One guarded include, appended once to the user's hyprland.lua.
+  readonly property string includeMarker: ">>> io.github.nocstah.omachill"
+  readonly property string includeBlock:
+    "\n-- " + includeMarker + ": chill-mode engine, re-created on every reload (line managed by the plugin) >>>\n"
+    + "do local p = os.getenv(\"HOME\") .. \"/.config/hypr/omachill.lua\"; local f = io.open(p, \"r\"); if f then f:close(); dofile(p) end end\n"
+    + "-- <<< io.github.nocstah.omachill <<<\n"
+
   function inject() {
     if (!enginePath) return
     if (injectProc.running) { pending = true; return }
     const opts = luaOpts(readSettings())
     lastOpts = opts
-    injectProc.command = ["hyprctl", "eval", opts + "; dofile(" + luaString(enginePath) + ")"]
+    const script =
+      "set -e; printf '%s' " + shellQuote(loaderText(opts)) + " > " + shellQuote(loaderPath) + "; "
+      + "if [ -f " + shellQuote(hyprlandLua) + " ] && ! grep -qF " + shellQuote(includeMarker) + " " + shellQuote(hyprlandLua) + "; then "
+      + "printf '%s' " + shellQuote(includeBlock) + " >> " + shellQuote(hyprlandLua) + "; fi; "
+      + "exec hyprctl eval " + shellQuote("dofile(" + luaString(loaderPath) + ")")
+    injectProc.command = ["bash", "-c", script]
     injectProc.running = true
   }
 
@@ -164,8 +223,13 @@ Item {
   Component.onDestruction: {
     // Disable / remove / shell restart: leave the compositor as we found it
     // (minus the Calendar key the engine displaced — a `hyprctl reload`
-    // brings that back).
-    Quickshell.execDetached(["hyprctl", "eval",
-      "if type(chillmode) == 'table' and chillmode.unload then chillmode.unload() end"])
+    // brings that back). Only OUR engine, though: on a plugin hot-reload the
+    // replacement instance may already have injected a newer one.
+    // The loader goes too: a reload after this must not resurrect an engine
+    // for a plugin that was disabled or removed.
+    Quickshell.execDetached(["bash", "-c",
+      "rm -f " + shellQuote(loaderPath) + "; exec hyprctl eval " + shellQuote(
+        "if type(chillmode) == 'table' and chillmode.unload and chillmode.generation == "
+        + luaString(generation) + " then chillmode.unload() end")])
   }
 }

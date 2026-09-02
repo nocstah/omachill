@@ -10,6 +10,7 @@
 --
 -- Options (all optional) come in through _G.CHILLMODE_OPTS:
 --   keybind   "SUPER + SHIFT + C"   toggle key ("" = no key)
+--   generation  (string)            stamp of the injecting Service instance (see Service.qml)
 --   inset     0.10                  each side pulled in by this much of the window
 --   size      0.72                  floater size on a workspace with nothing to copy
 --   rounding  14                    corner radius while chilled
@@ -406,21 +407,41 @@ end
 -- the blur samples live window content, so a chilled window shows the windows
 -- stacked under it instead of the wallpaper.
 --
--- Which ones we actually switched is remembered in a file, not an upvalue, so
--- a config reload mid-chill can still put back exactly what it found — and
--- anything already on is left alone, and left alone on the way out too.
+-- What each global held BEFORE the chill is remembered in a file, not an
+-- upvalue, so a config reload mid-chill can still put back exactly what it
+-- found — one `key=true|false` line per global (bare words from builds that
+-- only remembered what they turned ON read as `word=false`). Values, not
+-- flags: pop used to re-disable only what push had enabled, which left the
+-- ignore_opacity/xray pins behind on any setup where blur was already on —
+-- on a glass theme (foot alpha ~0.3 designed around ignore_opacity=true)
+-- that read as "every new terminal is 100% transparent" after the first
+-- chill. Push records only when the file is absent: a second workspace
+-- chilling, or a re-push after reload, must not overwrite the pre-chill
+-- values with the pinned ones.
+local GLOBAL_KEYS = {
+  blur = "decoration.blur.enabled",
+  shadow = "decoration.shadow.enabled",
+  resize = "general.resize_on_border",
+  ignore_opacity = "decoration.blur.ignore_opacity",
+  xray = "decoration.blur.xray",
+}
+
 local function chill_globals_push()
-  local turned = {}
-  if hl.get_config("decoration.blur.enabled") ~= true then turned[#turned + 1] = "blur" end
-  if hl.get_config("decoration.shadow.enabled") ~= true then turned[#turned + 1] = "shadow" end
-  if hl.get_config("general.resize_on_border") ~= true then turned[#turned + 1] = "resize" end
-  if #turned == 0 then return end
-  local f = io.open(GLOBALS_STATE, "w")
-  if f then
-    f:write(table.concat(turned, "\n"), "\n")
-    f:close()
+  local seen = io.open(GLOBALS_STATE)
+  if seen then
+    seen:close()
+  else
+    local lines = {}
+    for key, path in pairs(GLOBAL_KEYS) do
+      lines[#lines + 1] = key .. "=" .. tostring(hl.get_config(path) == true)
+    end
+    local f = io.open(GLOBALS_STATE, "w")
+    if f then
+      f:write(table.concat(lines, "\n"), "\n")
+      f:close()
+    end
   end
-  hl.config({
+  local cfg = {
     general = { resize_on_border = true },
     decoration = {
       -- xray keeps tiled windows out of the blur backdrop; ignore_opacity
@@ -428,36 +449,64 @@ local function chill_globals_push()
       -- Both are pinned here so chill mode looks the same whichever look
       -- SUPER + SHIFT + L happens to be on.
       blur = { enabled = true, ignore_opacity = false, xray = true },
-      -- The glow, not a drop shadow: wide range and a soft falloff, strong
-      -- under the focused window and almost nothing under the rest.
-      shadow = {
-        enabled = true,
-        range = 90,
-        render_power = 2,
-        offset = "0 14",
-        scale = 0.96,
-        color = "rgba(000000cc)",
-        color_inactive = "rgba(00000018)",
-      },
     },
-  })
+  }
+  -- A shadow that is already on is the user's shadow: its parameters are left
+  -- alone, and left alone on the way out too. Only when it is off does chill
+  -- bring its glow — wide range and a soft falloff, strong under the focused
+  -- window and almost nothing under the rest.
+  if hl.get_config("decoration.shadow.enabled") ~= true then
+    cfg.decoration.shadow = {
+      enabled = true,
+      range = 90,
+      render_power = 2,
+      offset = "0 14",
+      scale = 0.96,
+      color = "rgba(000000cc)",
+      color_inactive = "rgba(00000018)",
+    }
+  end
+  hl.config(cfg)
 end
 
 local function chill_globals_pop()
   local f = io.open(GLOBALS_STATE)
   if not f then return end
-  local off = {}
-  for line in f:lines() do off[line:gsub("%s+", "")] = true end
+  local prev = {}
+  for raw in f:lines() do
+    local line = raw:gsub("%s+", "")
+    local key, value = line:match("^([%w_]+)=(%a+)$")
+    if key then
+      prev[key] = value == "true"
+    elseif line ~= "" then
+      prev[line] = false -- old format: a bare word named a global that was off
+    end
+  end
   f:close()
   os.remove(GLOBALS_STATE)
+  local blur = {}
+  if prev.blur ~= nil then blur.enabled = prev.blur end
+  if prev.ignore_opacity ~= nil then blur.ignore_opacity = prev.ignore_opacity end
+  if prev.xray ~= nil then blur.xray = prev.xray end
   local cfg = {}
-  if off.blur or off.shadow then
+  if next(blur) ~= nil or prev.shadow ~= nil then
     cfg.decoration = {}
-    if off.blur then cfg.decoration.blur = { enabled = false } end
-    if off.shadow then cfg.decoration.shadow = { enabled = false } end
+    if next(blur) ~= nil then cfg.decoration.blur = blur end
+    if prev.shadow ~= nil then cfg.decoration.shadow = { enabled = prev.shadow } end
   end
-  if off.resize then cfg.general = { resize_on_border = false } end
-  hl.config(cfg)
+  if prev.resize ~= nil then cfg.general = { resize_on_border = prev.resize } end
+  if next(cfg) ~= nil then hl.config(cfg) end
+end
+
+-- Anything chilled anywhere? The tag is the only state, so scan the windows;
+-- if the list cannot be read, assume something is and keep the globals.
+local function any_chilled()
+  local wins = hl.get_windows()
+  if type(wins) ~= "table" then return true end
+  for i = 1, #wins do
+    if has_tag(wins[i]) then return true end
+  end
+  return false
 end
 
 -- Chill mode is a LOOK, not a re-layout (2026-08-25): every tiled window is
@@ -740,8 +789,10 @@ local function unchill(ws)
   end)
   if focused then hl.dispatch(hl.dsp.focus({ window = "address:" .. focused.address })) end
   hl.config({ cursor = { no_warps = no_warps } })
-  -- Restored before the rethrow: a failed re-tile must not strand them.
-  chill_globals_pop()
+  -- Restored before the rethrow — but only once nothing is chilled any more:
+  -- another workspace may still be, and (on a failed re-tile) so may this one,
+  -- in which case the tags are still there and a reload would re-push anyway.
+  if not any_chilled() then chill_globals_pop() end
   if not ok then error(err) end
   return #wins
 end
@@ -751,6 +802,19 @@ local function toggle(selector)
   if not ws then return end
   local off = #windows_on(ws, chilled) > 0
   local n = off and unchill(ws) or chill(ws)
+  -- Self-styled themes (looknfeel's SELF_STYLED_THEMES, e.g. glass-white):
+  -- their look engine idles in a third "theme" state. Leaving chill there
+  -- hands the desktop to the square omarchy look, so exiting chill feels the
+  -- same as on every other theme; entering from omarchy/custom is untouched,
+  -- and SUPER+SHIFT+L cycles back to the theme look when wanted. pcall: the
+  -- look engine may not exist at all (stock looknfeel).
+  if off then
+    pcall(function()
+      if _G.look and look.current and look.current() == "theme" then
+        look.set("omarchy", true)
+      end
+    end)
+  end
   notify(string.format("workspace %s — %d window%s %s", ws.name, n, n == 1 and "" or "s",
     off and "back to tiling" or "floating"))
   -- Tell the shell (bar widget) without it having to poll: Hyprland's `event`
@@ -845,17 +909,15 @@ local function unload()
   -- re-injected: if nothing is chilled any more, hand back the globals we
   -- switched on and drop the state file, so nothing of ours outlives us.
   pcall(function()
-    local wins = hl.get_windows()
-    if type(wins) ~= "table" then return end
-    for i = 1, #wins do
-      if has_tag(wins[i]) then return end
-    end
-    chill_globals_pop()
+    if not any_chilled() then chill_globals_pop() end
   end)
   _G.chillmode = nil
 end
 
-_G.chillmode = { toggle = toggle, state = state, unload = unload, version = "1.0.0" }
+-- `generation` is the injecting Service instance's stamp: its unload-on-
+-- destruction only fires when this is still its own engine (see Service.qml).
+_G.chillmode = { toggle = toggle, state = state, unload = unload, version = "1.0.0",
+  generation = OPTS.generation }
 
 -- A Hyprland reload (or a fresh injection) starts from a clean config, so the
 -- globals chill mode switched on are gone even though the tags survived. Put

@@ -79,7 +79,10 @@ BarWidget {
 
   function toggle() {
     if (!wsId) return
-    root.bar.run("hyprctl eval " + root.bar.shellQuote("chillmode.toggle(" + wsId + ")"))
+    // Util.shellQuote, not bar.shellQuote: the bar README documents the
+    // latter, but Bar.qml (Omarchy 4.0.x) has no such function — the click
+    // died with "Property 'shellQuote' ... is not a function".
+    root.bar.run("hyprctl eval " + Util.shellQuote("chillmode.toggle(" + wsId + ")"))
   }
 
   Process {

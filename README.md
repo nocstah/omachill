@@ -22,10 +22,14 @@ If the `--enable` half answers `omarchy-shell is not responding` (the shell
 was still reloading plugins), the plugin is installed — just run
 `omarchy plugin enable io.github.nocstah.omachill` once more.
 
-That is the whole install. The plugin ships its engine as Hyprland Lua and
-injects it into the running compositor itself (`hyprctl eval`), on shell start
-and again after every `hyprctl reload`. **Nothing is written into
-`~/.config/hypr`**; `omarchy plugin remove` leaves no trace.
+That is the whole install. The plugin ships its engine as Hyprland Lua. On
+enable it writes a small loader, `~/.config/hypr/omachill.lua` (the widget's
+settings plus a `dofile` of the engine), and appends one guarded, marked line
+to `~/.config/hypr/hyprland.lua` that runs that loader if it exists. Hyprland
+rebuilds its Lua state from the config on every `hyprctl reload`, so this is
+what keeps the engine alive across reloads; the shell also injects it
+directly (`hyprctl eval`) for immediate effect. Disabling or removing the
+plugin removes the loader again, and the include line is inert without it.
 
 Default key: `SUPER + SHIFT + C` (Omarchy's Calendar webapp sits there by
 default and is unbound while the plugin is enabled; change the key in the

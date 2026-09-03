@@ -455,7 +455,10 @@ local function chill_globals_push()
   -- alone, and left alone on the way out too. Only when it is off does chill
   -- bring its glow — wide range and a soft falloff, strong under the focused
   -- window and almost nothing under the rest.
-  if hl.get_config("decoration.shadow.enabled") ~= true then
+  -- Omaglass in its "flat" shadows mode means no shadows at all, glow
+  -- included — leave the shadow alone then.
+  local flat = type(_G.omaglass) == "table" and _G.omaglass.shadows == "flat"
+  if hl.get_config("decoration.shadow.enabled") ~= true and not flat then
     cfg.decoration.shadow = {
       enabled = true,
       range = 90,

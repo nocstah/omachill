@@ -1,11 +1,15 @@
 # Omachill
 
-Float every window on the current workspace **in place** — each pulled in 10 %
-on all four sides, with soft corners and glass — and press again to tile them
-back exactly where they were. A look, not a re-layout: your arrangement is
-preserved, the visible change is the air around each window.
+Float every window on the current workspace **in place** — each pulled in a
+little on all four sides (10 % by default), with soft corners and glass — and
+press again to tile them back exactly where they were. A look, not a
+re-layout: your arrangement is preserved, the visible change is the air around
+each window. Plus macOS-style hide and restore: `SUPER + H` parks a window,
+`SUPER + SHIFT + H` brings it back exactly where it was.
 
 Only the workspace you press it on changes. Everything else is left alone.
+Companion to [Omaglass](https://github.com/nocstah/omaglass), which draws the
+glass on every theme; each works without the other.
 
 | Tiled | Chilled |
 | :---: | :---: |
@@ -75,6 +79,22 @@ keys are bound, notifications, hide-when-idle. Changes apply on the spot. The
 same settings can be set with `omarchy bar set io.github.nocstah.omachill
 <key> <value>`; they are stored in `~/.config/omarchy/shell.json` like every
 other Omarchy plugin.
+
+## Settings
+
+| key | default | what |
+| --- | --- | --- |
+| `keybind` | `SUPER + SHIFT + C` | toggle chill on the current workspace (empty = no key) |
+| `inset` | `10` | shrink per side, percent of the window's own size |
+| `size` | `72` | newcomer size, percent of the work area |
+| `rounding` | `14` | corner radius of chilled windows |
+| `edge`, `gap` | `36`, `16` | flocking: margin from the screen edges, breathing room from other windows |
+| `adopt` | `true` | a window opened on a chilled workspace floats in |
+| `convert` | `true` | a window moved across the chill line converts |
+| `hide` | `true` | bind the hide and restore keys |
+| `keyHide`, `keyRestore` | `SUPER + H`, `SUPER + SHIFT + H` | the hide and restore keys |
+| `notify` | `true` | desktop notification on toggle |
+| `hideWhenIdle` | `false` | show the sofa only while the workspace is chilled |
 
 ## Scripting
 

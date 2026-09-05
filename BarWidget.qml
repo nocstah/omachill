@@ -1,5 +1,6 @@
 // Omachill — bar widget. A sofa that lights up (theme blue) while the workspace
-// shown on THIS monitor is chilled; click to chill / tile back.
+// shown on THIS monitor is chilled; click to chill / tile back, right-click
+// for the panel (chilled workspaces, hidden windows, settings).
 //
 // State comes from the engine: `custom>>chillmode <ws> on|off` events on the
 // Hyprland socket trigger a refresh, and the refresh itself just counts
@@ -17,7 +18,7 @@ BarWidget {
   id: root
   moduleName: "io.github.nocstah.omachill"
 
-  readonly property bool hideWhenIdle: setting("hideWhenIdle", false) === true
+  readonly property bool hideWhenIdle: String(setting("hideWhenIdle", false)).toLowerCase() === "true"
 
   // The theme's blue, read straight from the active theme's colors.toml the
   // same way qs.Commons Color reads its keys (Color itself only exposes
@@ -51,8 +52,11 @@ BarWidget {
     function onForegroundChanged() { themeColorsFile.reload() }
   }
 
-  // { workspaceName: chilledWindowCount }
+  // { workspaceName: chilledWindowCount }, { workspaceName: workspaceId }, and
+  // the windows parked on the hidden piles (special:hidden-<monitor>).
   property var chilled: ({})
+  property var chilledIds: ({})
+  property var hiddenWindows: []
 
   readonly property var monitor: {
     const vals = Hyprland.monitors.values
@@ -94,23 +98,32 @@ BarWidget {
       waitForEnd: true
       onStreamFinished: {
         const next = {}
+        const ids = {}
+        const hidden = []
         try {
           const list = JSON.parse(String(clientsOut.text || "[]"))
           for (let i = 0; i < list.length; i++) {
             const c = list[i]
+            if (!c.workspace) continue
+            const wsn = String(c.workspace.name)
+            if (c.mapped !== false && wsn.indexOf("special:hidden") === 0) {
+              hidden.push({ address: String(c.address), class: String(c.class || ""), title: String(c.title || ""), pile: wsn.replace(/^special:hidden-?/, "") })
+            }
             const tags = Array.isArray(c.tags) ? c.tags : []
             let hit = false
             for (let t = 0; t < tags.length; t++) {
               if (String(tags[t]).replace(/\*$/, "") === "chillmode") { hit = true; break }
             }
-            if (!hit || !c.workspace) continue
-            const k = String(c.workspace.name)
-            next[k] = (next[k] || 0) + 1
+            if (!hit) continue
+            next[wsn] = (next[wsn] || 0) + 1
+            ids[wsn] = Number(c.workspace.id)
           }
         } catch (e) {
           console.warn("[omachill] clients parse failed: " + e)
         }
         root.chilled = next
+        root.chilledIds = ids
+        root.hiddenWindows = hidden
       }
     }
   }
@@ -122,13 +135,39 @@ BarWidget {
       const n = String(event.name)
       if (n === "custom") {
         if (String(event.data || "").indexOf("chillmode") === 0) root.refresh()
-      } else if (n === "configreloaded" || n === "closewindow" || n === "movewindowv2" || n === "workspacev2" || n === "focusedmonv2") {
+      } else if (n === "configreloaded" || n === "openwindow" || n === "closewindow" || n === "movewindowv2" || n === "workspacev2" || n === "focusedmonv2") {
         root.refresh()
       }
     }
   }
 
   Component.onCompleted: refresh()
+
+  // The dropdown, a shell Panel loaded beside the widget (Omaglass's pattern).
+  function injectPanel() {
+    var target = panelLoader.item
+    if (!target) return
+    if ("bar" in target) target.bar = root.bar
+    if ("settings" in target) target.settings = root.settings
+    if ("anchorItem" in target) target.anchorItem = button
+    if ("hostWidget" in target) target.hostWidget = root
+  }
+  readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
+  function open() { if (panelLoader.item) panelLoader.item.open() }
+  function close() { if (panelLoader.item) panelLoader.item.close() }
+  function togglePanel() { if (panelLoader.item) panelLoader.item.toggle() }
+  readonly property bool popoutSwitchClosing: panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false
+  function closeForPopoutSwitch() { if (panelLoader.item) panelLoader.item.closeForPopoutSwitch() }
+  onBarChanged: injectPanel()
+  onSettingsChanged: injectPanel()
+  Loader {
+    id: panelLoader
+    active: true
+    source: Qt.resolvedUrl("Panel.qml")
+    visible: false
+    onLoaded: { root.injectPanel(); Qt.callLater(root.injectPanel) }
+    onStatusChanged: if (status === Loader.Error) console.warn("[omachill] panel failed to load")
+  }
 
   BarIconButton {
     id: button
@@ -137,9 +176,12 @@ BarWidget {
     text: "󰒹"  // nf-md-sofa
     active: root.active
     activeColor: root.themeBlue
-    tooltipText: root.active
+    tooltipText: (root.active
       ? "Chill mode on workspace " + root.wsName + " (" + root.count + (root.count === 1 ? " window" : " windows") + ") — click to tile back"
-      : "Click to chill workspace " + root.wsName
-    onPressed: function(b) { root.toggle() }
+      : "Click to chill workspace " + root.wsName) + " · right-click for the panel"
+    onPressed: function(b) {
+      if (b === Qt.RightButton) root.togglePanel()
+      else root.toggle()
+    }
   }
 }

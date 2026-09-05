@@ -12,6 +12,11 @@
 --   keybind   "SUPER + SHIFT + C"   toggle key ("" = no key)
 --   key_hide  "SUPER + H"           hide the focused window ("" = no key)
 --   key_restore "SUPER + SHIFT + H" bring the most recently hidden one back
+--   hide      true                  bind the two hide keys at all
+--   edge      36                    flocking: px a newcomer keeps from the screen edges
+--   gap       16                    flocking: px of breathing room from other windows
+--   adopt     true                  a window opened on a chilled workspace floats in
+--   convert   true                  moving a window across the chill line converts it
 --   generation  (string)            stamp of the injecting Service instance (see Service.qml)
 --   inset     0.10                  each side pulled in by this much of the window
 --   size      0.72                  floater size on a workspace with nothing to copy
@@ -40,7 +45,7 @@
 --
 -- Scriptable: hyprctl eval 'chillmode.toggle()'  /  'chillmode.toggle(3)'
 --             hyprctl eval 'chillmode.hide()'    /  'chillmode.hide("0x...")'
---             hyprctl eval 'chillmode.restore()' /  'chillmode.hidden()'
+--             hyprctl eval 'chillmode.restore()' /  'chillmode.restore("0x...")'  /  'chillmode.hidden()'
 -- State for UIs: every toggle emits a Hyprland custom event
 --     custom>>chillmode <workspace name> on|off
 -- and `chillmode.state()` returns { [workspace name] = count } for the bar.
@@ -53,13 +58,17 @@ local INSET = tonumber(OPTS.inset) or 0.10 -- chilled windows pull in this much 
 local KEY = OPTS.keybind == nil and "SUPER + SHIFT + C" or OPTS.keybind
 local KEY_HIDE = OPTS.key_hide == nil and "SUPER + H" or OPTS.key_hide
 local KEY_RESTORE = OPTS.key_restore == nil and "SUPER + SHIFT + H" or OPTS.key_restore
+local HIDE_KEYS = OPTS.hide ~= false
+local ADOPT = OPTS.adopt ~= false
+local CONVERT = OPTS.convert ~= false
 local NOTIFY = OPTS.notify ~= false
 local PLACE_DELAY = 60 -- ms to let a workspace move settle before placing a window
 -- 20ms is one frame at 60Hz: the window is only ever shown at its re-tiled
 -- size for about that long before the drop geometry is replayed, which is
 -- short enough not to read as a flash. 300 tries keeps the 6s watch window.
 local CHASE_TICK, CHASE_TRIES = 20, 300
-local GAP, EDGE = 16, 36 -- flocking: overlap padding, and inset from screen edges
+local GAP = tonumber(OPTS.gap) or 16 -- flocking: overlap padding
+local EDGE = tonumber(OPTS.edge) or 36 -- flocking: inset from the screen edges
 local GRID_X, GRID_Y = 20, 12 -- flocking: candidate grid, 21 x 13 positions
 -- Chilled windows are held FULLY OPAQUE at the compositor level, active and
 -- inactive alike, and "override" makes that stick even when looknfeel's custom
@@ -1153,7 +1162,10 @@ local function looking_at()
   return m and m.active_workspace
 end
 
-local function restore()
+-- restore(): the most recently hidden window. restore(addr): that one, if it
+-- is tracked; a window on a pile that never went through hide() comes back
+-- plainly.
+local function restore(addr)
   local ws = looking_at()
   if not ws then return end
   -- The follow-move and every focus change warp the cursor: keep it put. A
@@ -1163,6 +1175,22 @@ local function restore()
   local animate = hl.get_config("misc.animate_manual_resizes") == true
   hl.config({ cursor = { no_warps = true }, misc = { animate_manual_resizes = true } })
   local ok, err = pcall(function()
+    if addr then
+      for k = #hidden, 1, -1 do
+        if hidden[k].addr == addr then
+          local e = table.remove(hidden, k)
+          local done = restore_entry(e, ws)
+          save_hidden()
+          if done then return end
+          break
+        end
+      end
+      local w = hl.get_window("address:" .. addr)
+      if w and w.mapped and on_pile(w) then
+        on_addr(hl.dsp.window.move, addr, { workspace = tostring(ws.id), follow = true })
+      end
+      return
+    end
     while #hidden > 0 do
       local e = table.remove(hidden)
       if restore_entry(e, ws) then
@@ -1199,6 +1227,7 @@ local live = { subs = {}, rules = {}, keys = {} }
 -- A window born on a chilled workspace joins the vibe instead of tiling
 -- full-size behind the floaters.
 live.subs[#live.subs + 1] = hl.on("window.open", function(w)
+  if not ADOPT then return end
   local ws = w and w.workspace
   if not ws or not tiled(w) or chilled_others(ws, w) == 0 then return end
   float_into(w, ws)
@@ -1214,6 +1243,7 @@ end)
 -- the window's own field is mid-move and need not have caught up, while the
 -- argument is by definition where it is going.
 live.subs[#live.subs + 1] = hl.on("window.move_to_workspace", function(w, ws)
+  if not CONVERT then return end
   ws = ws or (w and w.workspace)
   if not w or not ws then return end
   guarded(function()
@@ -1248,8 +1278,10 @@ local function bind_key(key, label, fn)
   live.keys[#live.keys + 1] = key
 end
 bind_key(KEY, "Chill mode (float all / tile back)", toggle)
-bind_key(KEY_HIDE, "Hide window", function() hide() end)
-bind_key(KEY_RESTORE, "Restore hidden window", function() restore() end)
+if HIDE_KEYS then
+  bind_key(KEY_HIDE, "Hide window", function() hide() end)
+  bind_key(KEY_RESTORE, "Restore hidden window", function() restore() end)
+end
 
 local function unload()
   for i = 1, #live.subs do pcall(function() live.subs[i]:remove() end) end

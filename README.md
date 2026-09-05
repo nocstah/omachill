@@ -63,12 +63,18 @@ come back too, and a window restored on another monitor lands in the same
 relative place. The stack survives reloads (`~/.local/state/hypr-chill-hidden`).
 Both keys are settings (`keyHide`, `keyRestore`; empty = no key).
 
-## Bar widget
+## Bar widget and panel
 
-Shows an icon while the active workspace is chilled; click to toggle. Settings
-(key, inset, newcomer size, corner radius, notifications, hide-when-idle) live
-in the widget's settings and are stored in `~/.config/omarchy/shell.json` like
-every other Omarchy plugin.
+The sofa lights up while the workspace on that monitor is chilled; click to
+toggle. Right-click opens the panel: the workspace's state with a toggle,
+every chilled workspace with a "tile back", the hidden windows with a
+"restore" each, and behind the cog every setting: the keys, how much a window
+shrinks (`inset`), the newcomer size, the corner radius, the flocking edge
+margin and gap, whether new windows join and moves convert, whether the hide
+keys are bound, notifications, hide-when-idle. Changes apply on the spot. The
+same settings can be set with `omarchy bar set io.github.nocstah.omachill
+<key> <value>`; they are stored in `~/.config/omarchy/shell.json` like every
+other Omarchy plugin.
 
 ## Scripting
 

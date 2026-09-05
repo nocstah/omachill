@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.nocstah.omachill",
   "name": "Omachill",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "Ronny Iversen",
   "license": "MIT",
   "description": "Float every window on the current workspace in place, with glass and soft corners; press again to tile them back exactly where they were.",
@@ -16,7 +16,7 @@
   },
   "barWidget": {
     "displayName": "Omachill",
-    "description": "Shows when the active workspace is chilled; click to toggle.",
+    "description": "Shows when the active workspace is chilled; click to toggle, right-click for the panel and settings.",
     "category": "Utilities",
     "allowMultiple": false,
     "defaultSection": "right",
@@ -25,10 +25,15 @@
       "inset": 10,
       "size": 72,
       "rounding": 14,
-      "notify": true,
-      "hideWhenIdle": false,
+      "edge": 36,
+      "gap": 16,
+      "adopt": true,
+      "convert": true,
+      "hide": true,
       "keyHide": "SUPER + H",
-      "keyRestore": "SUPER + SHIFT + H"
+      "keyRestore": "SUPER + SHIFT + H",
+      "notify": true,
+      "hideWhenIdle": false
     },
     "schema": [
       {
@@ -39,10 +44,81 @@
         "defaultValue": "SUPER + SHIFT + C"
       },
       {
+        "key": "inset",
+        "type": "integer",
+        "label": "Shrink (%)",
+        "description": "How much a window shrinks when chilled: every side moves in by this share of the window's own size, so 10 keeps 80 % of its width and height, centred where it was.",
+        "defaultValue": 10,
+        "min": 0,
+        "max": 30,
+        "step": 1
+      },
+      {
+        "key": "size",
+        "type": "integer",
+        "label": "Newcomer size (%)",
+        "description": "Size of a window that floats in on a chilled workspace with nothing to copy from, as a share of the work area.",
+        "defaultValue": 72,
+        "min": 30,
+        "max": 100,
+        "step": 1
+      },
+      {
+        "key": "rounding",
+        "type": "integer",
+        "label": "Corner radius",
+        "description": "Corner radius of chilled windows, in pixels.",
+        "defaultValue": 14,
+        "min": 0,
+        "max": 40,
+        "step": 1
+      },
+      {
+        "key": "edge",
+        "type": "integer",
+        "label": "Edge margin (px)",
+        "description": "How close to the screen edges a newcomer may flock.",
+        "defaultValue": 36,
+        "min": 0,
+        "max": 120,
+        "step": 1
+      },
+      {
+        "key": "gap",
+        "type": "integer",
+        "label": "Flock gap (px)",
+        "description": "Breathing room a newcomer keeps from the windows already there when it picks its spot.",
+        "defaultValue": 16,
+        "min": 0,
+        "max": 60,
+        "step": 1
+      },
+      {
+        "key": "adopt",
+        "type": "boolean",
+        "label": "New windows join",
+        "description": "A window opened on a chilled workspace floats in at the size of the others instead of tiling full-size behind them.",
+        "defaultValue": true
+      },
+      {
+        "key": "convert",
+        "type": "boolean",
+        "label": "Moving converts",
+        "description": "A window moved onto a chilled workspace joins the floaters; a chilled window moved to a tiling workspace tiles.",
+        "defaultValue": true
+      },
+      {
+        "key": "hide",
+        "type": "boolean",
+        "label": "Hide and restore keys",
+        "description": "Bind the two keys below. Off keeps hidden windows restorable from the panel and from scripting.",
+        "defaultValue": true
+      },
+      {
         "key": "keyHide",
         "type": "string",
         "label": "Hide key",
-        "description": "Hyprland bind string that parks the focused window on its monitor's hidden pile, keeping its size and place (empty = no key). macOS Cmd+H.",
+        "description": "Parks the focused window on its monitor's hidden pile, keeping its size and place (empty = no key). macOS Cmd+H.",
         "defaultValue": "SUPER + H"
       },
       {
@@ -53,47 +129,17 @@
         "defaultValue": "SUPER + SHIFT + H"
       },
       {
-        "key": "inset",
-        "type": "integer",
-        "label": "Inset (%)",
-        "description": "Each chilled window pulls in by this much of its own size on every side. 10 keeps 80% of width and height.",
-        "min": 0,
-        "max": 30,
-        "step": 1,
-        "defaultValue": 10
-      },
-      {
-        "key": "size",
-        "type": "integer",
-        "label": "Newcomer size (%)",
-        "description": "Size of a window arriving on a chilled workspace that has nothing to copy from, as a percentage of the work area.",
-        "min": 30,
-        "max": 100,
-        "step": 1,
-        "defaultValue": 72
-      },
-      {
-        "key": "rounding",
-        "type": "integer",
-        "label": "Corner radius",
-        "description": "Rounding applied to chilled windows.",
-        "min": 0,
-        "max": 40,
-        "step": 1,
-        "defaultValue": 14
-      },
-      {
         "key": "notify",
         "type": "boolean",
         "label": "Notify on toggle",
-        "description": "Show a desktop notification when a workspace is chilled or tiled back.",
+        "description": "Desktop notification when a workspace is chilled or tiled back.",
         "defaultValue": true
       },
       {
         "key": "hideWhenIdle",
         "type": "boolean",
         "label": "Hide widget when nothing is chilled",
-        "description": "Only show the bar icon while the active workspace is chilled.",
+        "description": "Show the sofa only while the workspace on that monitor is chilled.",
         "defaultValue": false
       }
     ]

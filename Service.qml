@@ -96,6 +96,19 @@ Item {
     return null
   }
 
+  // shell.json holds what `omarchy bar set` was given: a bare `true`/`45`
+  // arrives as the string "true"/"45" (only `--json` stores typed values),
+  // and Boolean("false") is true. Read both shapes.
+  function asBool(v, fb) {
+    if (v === undefined || v === null) return fb
+    if (typeof v === "boolean") return v
+    const t = String(v).trim().toLowerCase()
+    if (t === "true" || t === "1" || t === "on" || t === "yes") return true
+    if (t === "false" || t === "0" || t === "off" || t === "no" || t === "") return false
+    return fb
+  }
+  function asNum(v, fb) { const n = Number(v); return isFinite(n) ? n : fb }
+
   function readSettings() {
     const d = manifest && manifest.barWidget && manifest.barWidget.defaults ? manifest.barWidget.defaults : {}
     const e = entryFor(shell ? shell.shellConfig : null) || {}
@@ -104,10 +117,15 @@ Item {
       keybind: String(pick("keybind", "SUPER + SHIFT + C")),
       keyHide: String(pick("keyHide", "SUPER + H")),
       keyRestore: String(pick("keyRestore", "SUPER + SHIFT + H")),
-      inset: Number(pick("inset", 10)) / 100,
-      size: Number(pick("size", 72)) / 100,
-      rounding: Number(pick("rounding", 14)),
-      notify: Boolean(pick("notify", true)),
+      hide: asBool(pick("hide", true), true),
+      edge: asNum(pick("edge", 36), 36),
+      gap: asNum(pick("gap", 16), 16),
+      adopt: asBool(pick("adopt", true), true),
+      convert: asBool(pick("convert", true), true),
+      inset: asNum(pick("inset", 10), 10) / 100,
+      size: asNum(pick("size", 72), 72) / 100,
+      rounding: asNum(pick("rounding", 14), 14),
+      notify: asBool(pick("notify", true), true),
     }
   }
 
@@ -118,6 +136,8 @@ Item {
   function luaOpts(s) {
     return "CHILLMODE_OPTS = { keybind = " + luaString(s.keybind)
       + ", key_hide = " + luaString(s.keyHide) + ", key_restore = " + luaString(s.keyRestore)
+      + ", hide = " + (s.hide ? "true" : "false") + ", edge = " + s.edge + ", gap = " + s.gap
+      + ", adopt = " + (s.adopt ? "true" : "false") + ", convert = " + (s.convert ? "true" : "false")
       + ", inset = " + s.inset + ", size = " + s.size + ", rounding = " + s.rounding
       + ", notify = " + (s.notify ? "true" : "false")
       + ", generation = " + luaString(generation) + " }"

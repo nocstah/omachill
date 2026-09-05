@@ -102,6 +102,8 @@ Item {
     function pick(k, fb) { return e[k] !== undefined && e[k] !== null ? e[k] : (d[k] !== undefined ? d[k] : fb) }
     return {
       keybind: String(pick("keybind", "SUPER + SHIFT + C")),
+      keyHide: String(pick("keyHide", "SUPER + H")),
+      keyRestore: String(pick("keyRestore", "SUPER + SHIFT + H")),
       inset: Number(pick("inset", 10)) / 100,
       size: Number(pick("size", 72)) / 100,
       rounding: Number(pick("rounding", 14)),
@@ -115,6 +117,7 @@ Item {
 
   function luaOpts(s) {
     return "CHILLMODE_OPTS = { keybind = " + luaString(s.keybind)
+      + ", key_hide = " + luaString(s.keyHide) + ", key_restore = " + luaString(s.keyRestore)
       + ", inset = " + s.inset + ", size = " + s.size + ", rounding = " + s.rounding
       + ", notify = " + (s.notify ? "true" : "false")
       + ", generation = " + luaString(generation) + " }"

@@ -51,6 +51,18 @@ widget's settings).
 - **Reload-proof** — the `chillmode` window tag is the only state, so a
   Hyprland reload or a shell restart cannot lose track of what is chilled.
 
+## Hide and restore (Cmd+H)
+
+`SUPER + H` parks the focused window on its monitor's hidden pile, a special
+workspace; `SUPER + SHIFT + H` brings the most recently hidden window back
+onto the workspace you are looking at. The window comes back exactly where it
+was: a tiled window is tiled *into* its old rectangle (the neighbour covering
+the spot is split along the old edge at the old ratio), a floating one lands
+at its old spot, a chilled one rejoins the floaters, fullscreen and maximised
+come back too, and a window restored on another monitor lands in the same
+relative place. The stack survives reloads (`~/.local/state/hypr-chill-hidden`).
+Both keys are settings (`keyHide`, `keyRestore`; empty = no key).
+
 ## Bar widget
 
 Shows an icon while the active workspace is chilled; click to toggle. Settings
@@ -63,6 +75,8 @@ every other Omarchy plugin.
 ```bash
 hyprctl eval 'chillmode.toggle()'      # current workspace
 hyprctl eval 'chillmode.toggle(3)'     # workspace 3
+hyprctl eval 'chillmode.hide()'        # hide the focused window (or "0x..." )
+hyprctl eval 'chillmode.restore()'     # bring the most recently hidden one back
 ```
 
 Every toggle emits a Hyprland custom event `custom>>chillmode <workspace> on|off`

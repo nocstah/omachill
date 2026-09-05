@@ -10,6 +10,8 @@
 --
 -- Options (all optional) come in through _G.CHILLMODE_OPTS:
 --   keybind   "SUPER + SHIFT + C"   toggle key ("" = no key)
+--   key_hide  "SUPER + H"           hide the focused window ("" = no key)
+--   key_restore "SUPER + SHIFT + H" bring the most recently hidden one back
 --   generation  (string)            stamp of the injecting Service instance (see Service.qml)
 --   inset     0.10                  each side pulled in by this much of the window
 --   size      0.72                  floater size on a workspace with nothing to copy
@@ -37,6 +39,8 @@
 -- reload can't lose track of what is chilled.
 --
 -- Scriptable: hyprctl eval 'chillmode.toggle()'  /  'chillmode.toggle(3)'
+--             hyprctl eval 'chillmode.hide()'    /  'chillmode.hide("0x...")'
+--             hyprctl eval 'chillmode.restore()' /  'chillmode.hidden()'
 -- State for UIs: every toggle emits a Hyprland custom event
 --     custom>>chillmode <workspace name> on|off
 -- and `chillmode.state()` returns { [workspace name] = count } for the bar.
@@ -47,6 +51,8 @@ local ROUNDING = tonumber(OPTS.rounding) or 14
 local SIZE = tonumber(OPTS.size) or 0.72 -- fallback floater size (fraction of the work area)
 local INSET = tonumber(OPTS.inset) or 0.10 -- chilled windows pull in this much of their own size on EACH side
 local KEY = OPTS.keybind == nil and "SUPER + SHIFT + C" or OPTS.keybind
+local KEY_HIDE = OPTS.key_hide == nil and "SUPER + H" or OPTS.key_hide
+local KEY_RESTORE = OPTS.key_restore == nil and "SUPER + SHIFT + H" or OPTS.key_restore
 local NOTIFY = OPTS.notify ~= false
 local PLACE_DELAY = 60 -- ms to let a workspace move settle before placing a window
 -- 20ms is one frame at 60Hz: the window is only ever shown at its re-tiled
@@ -842,6 +848,344 @@ local function state()
   return out
 end
 
+
+-- ── Hide / restore ────────────────────────────────────────────────────────
+-- KEY_HIDE parks the focused window on its monitor's hidden pile (a special
+-- workspace), KEY_RESTORE brings the most recently hidden one back onto the
+-- workspace you are looking at -- macOS Cmd+H. Moved in from
+-- ~/.config/hypr/hide.lua (2026-09-05): it already rode on chill mode's tag,
+-- inset and rounding, and shares every geometry helper above.
+--
+--   * A TILED window is floated in place first -- float, resize and move go
+--     out in one batch, so it is never drawn anywhere but where it already
+--     is -- and only then sent to the pile. Sent tiled, Hyprland re-tiles it
+--     into the pile's full work area, and a window fading into an invisible
+--     workspace is still rendered (Renderer.cpp shouldRenderWindow /
+--     WINDOW_ALPHA_MOVE_TO_WORKSPACE, checked against v0.56.2), so that
+--     re-tile showed as a grow-to-fullscreen during the fade-out.
+--   * Coming back, the window fades in floating at exactly the rect it was
+--     hidden from, then is tiled INTO that rect: the tiled neighbour covering
+--     the old spot is split along the old edge, on the old side, at the old
+--     ratio -- the same bend-the-fresh-split trick as split_into. With the
+--     same neighbours as before the layout comes back exactly; otherwise it
+--     is the closest tiling that still has the window where it was.
+--   * A CHILLED window drops the tag for the trip (keeping the corners, so
+--     the fade looks right); the engine would otherwise tile it into the
+--     pile and re-flock it on the way back at the others' average size. It
+--     gets the tag back if it lands among chilled windows. Rects cross the
+--     chill line the way toggle does: a chilled window returning to a tiling
+--     workspace grows out of its inset, a tiled one landing among chilled
+--     floaters takes the inset.
+--   * Rects are remembered as fractions of the origin monitor's work area,
+--     so a window restored on another monitor lands in the same relative spot.
+--   * Fullscreen / maximised comes off for the trip and goes back on. Focus
+--     follows the restored window; the cursor stays where it is.
+--
+-- One pile per monitor: special workspaces are monitor-bound, and a single
+-- "special:hidden" dragged a window hidden on another monitor over to the
+-- pile's monitor mid-fade. A pre-existing plain "special:hidden" is still
+-- drained by restore. The stack (most recently hidden restored first) is
+-- mirrored to HIDDEN_STATE, so a config reload -- which rebuilds this Lua
+-- state -- forgets neither the order nor the rects. Windows that reached a
+-- pile some other way are still restored, last, with nothing to replay.
+local PILE_PREFIX = "special:hidden"
+local HIDDEN_STATE = os.getenv("HOME") .. "/.local/state/hypr-chill-hidden"
+local HIDDEN_STATE_LEGACY = os.getenv("HOME") .. "/.local/state/hypr-hidden-windows" -- hide.lua's, same format
+
+local function pile_for(mon) return PILE_PREFIX .. "-" .. tostring(mon.name) end
+local function on_pile(w)
+  local ws = w.workspace
+  local name = ws and tostring(ws.name) or ""
+  return name:sub(1, #PILE_PREFIX) == PILE_PREFIX
+end
+
+local function on_addr(fn, addr, opts)
+  opts = opts or {}
+  opts.window = "address:" .. addr
+  hl.dispatch(fn(opts))
+end
+
+local function rect_of(w)
+  local x, y = xy(w.at)
+  local sw, sh = xy(w.size)
+  return { x = x, y = y, w = sw, h = sh }
+end
+
+local function area_of(m)
+  local x, y, w, h = work_area(m)
+  return { x = x, y = y, w = w, h = h }
+end
+
+local function round(v) return math.floor(v + 0.5) end
+
+-- Exact floating geometry. Resize first: a floating resize keeps the centre
+-- (DefaultFloatingAlgorithm::resizeTarget), so the move has the last word.
+local function set_rect(addr, r)
+  on_addr(hl.dsp.window.resize, addr, { x = math.max(1, round(r.w)), y = math.max(1, round(r.h)) })
+  on_addr(hl.dsp.window.move, addr, { x = round(r.x), y = round(r.y) })
+end
+
+-- The same rect in another work area, by fractions.
+local function map_rect(r, from, to)
+  if from.x == to.x and from.y == to.y and from.w == to.w and from.h == to.h then
+    return { x = r.x, y = r.y, w = r.w, h = r.h }
+  end
+  local sx, sy = to.w / from.w, to.h / from.h
+  return { x = to.x + (r.x - from.x) * sx, y = to.y + (r.y - from.y) * sy, w = r.w * sx, h = r.h * sy }
+end
+
+-- chill()'s inset -- every side pulled in by k of the window's own size --
+-- and its inverse (target_rect above does the same for a live window).
+local function inset_rect(r, k)
+  local ix, iy = r.w * k, r.h * k
+  return { x = r.x + ix, y = r.y + iy, w = r.w - 2 * ix, h = r.h - 2 * iy }
+end
+local function outset_rect(r, k)
+  local ow, oh = r.w / (1 - 2 * k), r.h / (1 - 2 * k)
+  return { x = r.x - (ow - r.w) / 2, y = r.y - (oh - r.h) / 2, w = ow, h = oh }
+end
+
+-- The stack: oldest first, restore pops from the end. Entry: addr, ws (origin
+-- workspace id), floating, chilled, fs (0 none / 1 maximised / 2 fullscreen),
+-- rect, and area -- the origin monitor's work area, for cross-monitor mapping.
+local hidden = {}
+
+local function save_hidden()
+  local f = io.open(HIDDEN_STATE, "w")
+  if not f then return end
+  for i = 1, #hidden do
+    local e = hidden[i]
+    f:write(string.format("%s %d %d %d %d %d %d %d %d %d %d %d %d\n",
+      e.addr, e.ws, e.floating and 1 or 0, e.chilled and 1 or 0, e.fs,
+      round(e.rect.x), round(e.rect.y), round(e.rect.w), round(e.rect.h),
+      round(e.area.x), round(e.area.y), round(e.area.w), round(e.area.h)))
+  end
+  f:close()
+end
+
+local function load_hidden()
+  local f, legacy = io.open(HIDDEN_STATE, "r"), false
+  if not f then
+    f, legacy = io.open(HIDDEN_STATE_LEGACY, "r"), true -- hide.lua's stack, taken over once
+  end
+  if not f then return end
+  for line in f:lines() do
+    local t = {}
+    for tok in line:gmatch("%S+") do t[#t + 1] = tok end
+    if #t == 13 then
+      hidden[#hidden + 1] = {
+        addr = t[1], ws = tonumber(t[2]) or 0, floating = t[3] == "1", chilled = t[4] == "1", fs = tonumber(t[5]) or 0,
+        rect = { x = tonumber(t[6]) or 0, y = tonumber(t[7]) or 0, w = tonumber(t[8]) or 1, h = tonumber(t[9]) or 1 },
+        area = { x = tonumber(t[10]) or 0, y = tonumber(t[11]) or 0, w = tonumber(t[12]) or 1, h = tonumber(t[13]) or 1 },
+      }
+    end
+  end
+  f:close()
+  if legacy then
+    save_hidden()
+    os.remove(HIDDEN_STATE_LEGACY)
+  end
+end
+pcall(load_hidden)
+
+local function hide(addr)
+  local w = addr and hl.get_window("address:" .. addr) or hl.get_active_window()
+  if not w or not w.mapped or w.pinned then return end
+  local ws = w.workspace
+  if not ws or ws.special then return end
+  addr = w.address
+
+  -- Fullscreen off first: resize/move refuse a fullscreen window, and the
+  -- rect worth keeping is the one underneath.
+  local fs = tonumber(w.fullscreen) or 0
+  if fs ~= 0 then
+    on_addr(hl.dsp.window.fullscreen, addr, { action = "unset" })
+    w = hl.get_window("address:" .. addr)
+    if not w then return end
+  end
+
+  local mon = w.monitor or ws.monitor or hl.get_monitor_at_cursor()
+  if not mon then return end
+  local was_chilled = chilled(w)
+  local entry = { addr = addr, ws = ws.id, floating = w.floating, chilled = was_chilled, fs = fs,
+    rect = rect_of(w), area = area_of(mon) }
+  for k = #hidden, 1, -1 do
+    if hidden[k].addr == addr then table.remove(hidden, k) end
+  end
+  hidden[#hidden + 1] = entry
+  save_hidden()
+
+  if was_chilled then
+    -- Keep the chilled corners through the fade (the rule goes with the tag),
+    -- then drop the tag so the engine sees a plain floater it never touches
+    -- rather than a chilled window crossing onto a tiling workspace.
+    on_addr(hl.dsp.window.set_prop, addr, { prop = "rounding", value = tostring(ROUNDING) })
+    on_addr(hl.dsp.window.tag, addr, { tag = "-" .. TAG })
+  elseif not w.floating then
+    -- Float in place. Floating picks a centred "last floating size"; the
+    -- resize and move in the same batch put the tiled rect back before a
+    -- frame is drawn, so on screen nothing moves.
+    on_addr(hl.dsp.window.float, addr, { action = "enable" })
+    set_rect(addr, entry.rect)
+  end
+  on_addr(hl.dsp.window.move, addr, { workspace = pile_for(mon), follow = false })
+end
+
+-- Tile `addr` (floating on ws, sitting at R) back into the layout AT R.
+-- Dwindle has no "split this node here". What it has: a newly tiled window
+-- splits the FOCUSED window's node, togglesplit flips that split's
+-- orientation, swapsplit its side, and a resize sets its ratio. So: pick the
+-- tiled window whose rect covers most of R, focus it, tile in, then bend the
+-- fresh split until it matches -- all inside one handler, so no intermediate
+-- state is ever drawn (split_into does the same for a whole tree).
+local function tile_into(ws, addr, R)
+  local best, best_ov, best_d
+  local wins = hl.get_windows({ workspace = ws.id })
+  for i = 1, #wins do
+    local o = wins[i]
+    if o.mapped and not o.floating and (tonumber(o.fullscreen) or 0) == 0 and o.address ~= addr then
+      local b = rect_of(o)
+      local dx = math.min(R.x + R.w, b.x + b.w) - math.max(R.x, b.x)
+      local dy = math.min(R.y + R.h, b.y + b.h) - math.max(R.y, b.y)
+      local ov = (dx > 0 and dy > 0) and dx * dy or 0
+      local d = math.abs((b.x + b.w / 2) - (R.x + R.w / 2)) + math.abs((b.y + b.h / 2) - (R.y + R.h / 2))
+      if not best or ov > best_ov or (ov == best_ov and d < best_d) then
+        best, best_ov, best_d = o.address, ov, d
+      end
+    end
+  end
+  if not best then
+    on_addr(hl.dsp.window.float, addr, { action = "disable" }) -- alone: it fills the workspace
+    return
+  end
+  local B = geom_of(ws, best)
+  if not B then return end
+
+  -- Which way to cut B so the window gets R back: a band across B's width is
+  -- a top/bottom cut ("y"), one across its height a left/right cut ("x").
+  -- Neither lines up when the layout changed meanwhile: cut along whichever
+  -- R spans more of.
+  local axis
+  if math.abs(R.w - B.w) <= TOL then
+    axis = "y"
+  elseif math.abs(R.h - B.h) <= TOL then
+    axis = "x"
+  else
+    axis = (R.w / B.w >= R.h / B.h) and "y" or "x"
+  end
+  local dim = axis == "x" and "w" or "h"
+  local first = (R[axis] + R[dim] / 2) < (B[axis] + B[dim] / 2) -- left/top of the neighbour
+
+  focus_addr(best)
+  on_addr(hl.dsp.window.float, addr, { action = "disable" })
+  local gb, gw = geom_of(ws, best), geom_of(ws, addr)
+  if not gb or not gw then return end
+
+  -- Orientation: whichever axis the two now differ on more is the one
+  -- dwindle cut along.
+  local got = math.abs(gb.x - gw.x) >= math.abs(gb.y - gw.y) and "x" or "y"
+  if got ~= axis then
+    layoutmsg("togglesplit")
+    gb, gw = geom_of(ws, best), geom_of(ws, addr)
+    if not gb or not gw then return end
+  end
+  if (gw[axis] < gb[axis]) ~= first then
+    layoutmsg("swapsplit")
+    gb, gw = geom_of(ws, best), geom_of(ws, addr)
+    if not gb or not gw then return end
+  end
+
+  -- Ratio. A resize on either child adds its delta to the parent's split
+  -- ratio, which grows the FIRST child (DwindleAlgorithm::resizeTarget) --
+  -- so always size whichever of the two comes first.
+  local total = gb[dim] + gw[dim]
+  local want = math.max(0.1 * total, math.min(0.9 * total, R[dim]))
+  local tgt, cur = (first and addr or best), (first and gw or gb)
+  local px = round(first and want or total - want)
+  if math.abs(px - cur[dim]) > 2 then
+    on_addr(hl.dsp.window.resize, tgt, { x = axis == "x" and px or cur.w, y = axis == "y" and px or cur.h })
+  end
+end
+
+local function restore_entry(e, ws)
+  local w = hl.get_window("address:" .. e.addr)
+  if not w or not w.mapped or not on_pile(w) then return false end
+  local mon = ws.monitor or hl.get_monitor_at_cursor()
+  if not mon then return false end
+  local addr = e.addr
+  local R = map_rect(e.rect, e.area, area_of(mon))
+
+  -- Back onto the workspace, focused. Floating for the trip, it arrives at
+  -- the same monitor-relative spot; set_rect re-asserts the rect (a no-op on
+  -- the same monitor, the mapped spot on another).
+  on_addr(hl.dsp.window.move, addr, { workspace = tostring(ws.id), follow = true })
+  if e.floating and not e.chilled then
+    set_rect(addr, R)
+  elseif chilled_others(ws, { address = addr }) > 0 then
+    -- Among chilled windows: join them, at chill()'s inset if it was a tile.
+    if not e.chilled then R = inset_rect(R, INSET) end
+    on_addr(hl.dsp.window.set_prop, addr, { prop = "rounding", value = "unset" })
+    on_addr(hl.dsp.window.tag, addr, { tag = "+" .. TAG })
+    set_rect(addr, R)
+  else
+    -- A tiling workspace: back into the layout, a chilled rect first grown
+    -- out of its inset (what un-chill would have done to it).
+    if e.chilled then R = outset_rect(R, INSET) end
+    on_addr(hl.dsp.window.set_prop, addr, { prop = "rounding", value = "unset" })
+    set_rect(addr, R)
+    tile_into(ws, addr, R)
+    focus_addr(addr)
+  end
+  if e.fs ~= 0 then
+    on_addr(hl.dsp.window.fullscreen, addr, { action = "set", mode = e.fs == 1 and "maximized" or "fullscreen" })
+  end
+  return true
+end
+
+-- The workspace the user is looking at: the focused window's, unless that is
+-- a special one (a pad in front), else the one under the cursor.
+-- hl.get_active_workspace() follows the "focused monitor", which lags behind
+-- a focus moved by dispatch; the focused window itself never does.
+local function looking_at()
+  local w = hl.get_active_window()
+  if w and w.workspace and not w.workspace.special then return w.workspace end
+  local m = hl.get_monitor_at_cursor()
+  return m and m.active_workspace
+end
+
+local function restore()
+  local ws = looking_at()
+  if not ws then return end
+  -- The follow-move and every focus change warp the cursor: keep it put. A
+  -- manual resize normally snaps without animating: let the neighbours slide
+  -- into their new sizes instead.
+  local no_warps = hl.get_config("cursor.no_warps") == true
+  local animate = hl.get_config("misc.animate_manual_resizes") == true
+  hl.config({ cursor = { no_warps = true }, misc = { animate_manual_resizes = true } })
+  local ok, err = pcall(function()
+    while #hidden > 0 do
+      local e = table.remove(hidden)
+      if restore_entry(e, ws) then
+        save_hidden()
+        return
+      end
+    end
+    save_hidden()
+    -- Nothing tracked left: anything else on a pile (hidden some other way,
+    -- or before this existed) comes back the plain way.
+    local wins = hl.get_windows()
+    for i = 1, #wins do
+      local w = wins[i]
+      if w.mapped and on_pile(w) then
+        on_addr(hl.dsp.window.move, w.address, { workspace = tostring(ws.id), follow = true })
+        return
+      end
+    end
+  end)
+  hl.config({ cursor = { no_warps = no_warps }, misc = { animate_manual_resizes = animate } })
+  if not ok then error(err) end
+end
+
 -- ── Registration: re-entrant ─────────────────────────────────────────────
 -- The plugin's service dofile()s this file on shell start and after every
 -- Hyprland reload; a previous load may still be live (shell restart without a
@@ -850,7 +1194,7 @@ end
 if type(_G.chillmode) == "table" and type(_G.chillmode.unload) == "function" then
   pcall(_G.chillmode.unload)
 end
-local live = { subs = {}, rules = {}, key = nil }
+local live = { subs = {}, rules = {}, keys = {} }
 
 -- A window born on a chilled workspace joins the vibe instead of tiling
 -- full-size behind the floaters.
@@ -894,20 +1238,25 @@ end)
 -- glass. Nothing here touches a window on any other workspace.
 live.rules[#live.rules + 1] = hl.window_rule({ match = { tag = TAG }, rounding = ROUNDING, opacity = OPACITY })
 
--- Toggle key. Omarchy binds SUPER + SHIFT + C to the Calendar webapp; chill
--- mode takes it (mirrors focus mode's SUPER + SHIFT + F), so the previous
--- owner is dropped first. "" in the options means no key at all.
-if KEY ~= "" then
-  hl.unbind(KEY)
-  o.bind(KEY, "Chill mode (float all / tile back)", toggle)
-  live.key = KEY
+-- Keys. Omarchy binds SUPER + SHIFT + C to the Calendar webapp; chill mode
+-- takes it (mirrors focus mode's SUPER + SHIFT + F), so the previous owner
+-- is always dropped first. "" in the options means no key at all.
+local function bind_key(key, label, fn)
+  if key == nil or key == "" then return end
+  hl.unbind(key)
+  o.bind(key, label, fn)
+  live.keys[#live.keys + 1] = key
 end
+bind_key(KEY, "Chill mode (float all / tile back)", toggle)
+bind_key(KEY_HIDE, "Hide window", function() hide() end)
+bind_key(KEY_RESTORE, "Restore hidden window", function() restore() end)
 
 local function unload()
   for i = 1, #live.subs do pcall(function() live.subs[i]:remove() end) end
   for i = 1, #live.rules do pcall(function() live.rules[i]:set_enabled(false) end) end
-  if live.key then pcall(hl.unbind, live.key) end
-  live = { subs = {}, rules = {}, key = nil }
+  for i = 1, #live.keys do pcall(hl.unbind, live.keys[i]) end
+  live = { subs = {}, rules = {}, keys = {} }
+  _G.hidewin = nil
   -- Leaving for good (plugin disabled/removed) rather than about to be
   -- re-injected: if nothing is chilled any more, hand back the globals we
   -- switched on and drop the state file, so nothing of ours outlives us.
@@ -919,8 +1268,11 @@ end
 
 -- `generation` is the injecting Service instance's stamp: its unload-on-
 -- destruction only fires when this is still its own engine (see Service.qml).
-_G.chillmode = { toggle = toggle, state = state, unload = unload, version = "1.0.0",
+_G.chillmode = { toggle = toggle, state = state, hide = hide, restore = restore,
+  hidden = function() return hidden end, unload = unload, version = "1.1.0",
   generation = OPTS.generation }
+-- hide.lua's name for the same calls, so scripts written against it keep working.
+_G.hidewin = { hide = hide, restore = restore, stack = function() return hidden end }
 
 -- A Hyprland reload (or a fresh injection) starts from a clean config, so the
 -- globals chill mode switched on are gone even though the tags survived. Put

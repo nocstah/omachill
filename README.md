@@ -35,6 +35,16 @@ what keeps the engine alive across reloads; the shell also injects it
 directly (`hyprctl eval`) for immediate effect. Disabling or removing the
 plugin removes the loader again, and the include line is inert without it.
 
+To remove it:
+
+```bash
+omarchy plugin remove io.github.nocstah.omachill
+```
+
+That deletes the loader and unbinds the keys; the marked include line left in
+`hyprland.lua` is inert and safe to delete, and the two small state files
+under `~/.local/state/` (`hypr-chill-globals`, `hypr-chill-hidden`) can go too.
+
 Default key: `SUPER + SHIFT + C` (Omarchy's Calendar webapp sits there by
 default and is unbound while the plugin is enabled; change the key in the
 widget's settings).

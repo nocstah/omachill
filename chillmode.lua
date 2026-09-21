@@ -17,6 +17,8 @@
 --   gap       16                    flocking: px of breathing room from other windows
 --   adopt     true                  a window opened on a chilled workspace floats in
 --   convert   true                  moving a window across the chill line converts it
+--   auto      false                 a workspace chills itself while it is small
+--   auto_max  3                     how many windows still count as small
 --   generation  (string)            stamp of the injecting Service instance (see Service.qml)
 --   inset     0.10                  each side pulled in by this much of the window
 --   size      0.72                  floater size on a workspace with nothing to copy
@@ -42,6 +44,9 @@
 -- keybind, having no drop point, flocks into the least-crowded gap at the
 -- size of the windows already there. The tag is the only state, so a config
 -- reload can't lose track of what is chilled.
+-- With `auto` on, no key is needed on a quiet workspace: it chills itself
+-- while it holds at most `auto_max` windows and tiles back the moment the
+-- next one arrives -- see the auto-chill section below.
 --
 -- Scriptable: hyprctl eval 'chillmode.toggle()'  /  'chillmode.toggle(3)'
 --             hyprctl eval 'chillmode.hide()'    /  'chillmode.hide("0x...")'
@@ -62,6 +67,15 @@ local HIDE_KEYS = OPTS.hide ~= false
 local ADOPT = OPTS.adopt ~= false
 local CONVERT = OPTS.convert ~= false
 local NOTIFY = OPTS.notify ~= false
+local AUTO = OPTS.auto == true -- off unless asked for: it takes the workspace over
+local AUTO_MAX = math.max(0, math.floor(tonumber(OPTS.auto_max) or 3))
+local AUTO_DELAY = 60 -- ms to let a workspace settle before auto looks at it
+-- Forward declarations. The auto-chill pass itself lives near the bottom --
+-- it needs chill() and unchill() -- but chase(), far above it, has to ask
+-- whether a window it is about to adopt would take the workspace over the
+-- limit. Without these two names as locals up here that call would compile to
+-- a global lookup and find nil.
+local auto_over, schedule_auto
 local PLACE_DELAY = 60 -- ms to let a workspace move settle before placing a window
 -- 20ms is one frame at 60Hz: the window is only ever shown at its re-tiled
 -- size for about that long before the drop geometry is replayed, which is
@@ -118,6 +132,78 @@ local function on_window(fn, w, opts)
   opts = opts or {}
   opts.window = "address:" .. w.address
   hl.dispatch(fn(opts))
+end
+
+-- ── Groups are one tile ───────────────────────────────────────────────────
+-- Tabbed windows share a single tile and a single geometry, so chill mode
+-- treats a group as ONE window throughout: one thing to chill, one rectangle
+-- to tile back, one window against the auto limit. Chilling the members
+-- separately is not a near miss but visibly broken -- three float/resize/move
+-- batches land on one shared geometry and the tabs come out at 8 px wide
+-- (seen 2026-09-21 on a three-tab group).
+
+-- An address out of whatever hl hands back for a window. Hyprland passes
+-- window.group out as USERDATA, not a table, and its members are window
+-- userdata too -- measured 2026-09-21 against 0.56.2: `type(w.group)` is
+-- "userdata", `g.size` 3, `g.current` userdata carrying an .address. A
+-- `type(x) == "table"` guard therefore rejects every real group. pcall: the
+-- field need not exist.
+local function addr_of(v)
+  if v == nil then return nil end
+  local a
+  pcall(function() a = v.address end)
+  return type(a) == "string" and a or nil
+end
+
+-- The key a window's group answers with, or nil when it is not grouped. Every
+-- member gives the same key -- the group's current window, else the lowest
+-- member address -- so whichever member is met first is the one that stands
+-- for the group and the rest fold into it. The numeric loop is deliberate:
+-- see the note on indexed loops at the top of this file.
+local function group_key(w)
+  local key
+  pcall(function()
+    local g = w.group
+    if g == nil then return end
+    key = addr_of(g.current)
+    if key then return end
+    local m = g.members
+    if type(m) ~= "table" then return end
+    for i = 1, #m do
+      local a = addr_of(m[i])
+      if a and (not key or a < key) then key = a end
+    end
+  end)
+  return key
+end
+
+-- One entry per tile: groups collapse to their current (visible) member,
+-- whose rectangle is the tile's and whose dispatches move the whole group.
+-- The other members may report a stale rect, so the representative matters.
+local function by_tile(wins)
+  local out, seen = {}, {}
+  for i = 1, #wins do
+    local w = wins[i]
+    local k = group_key(w)
+    if not k then
+      out[#out + 1] = w
+    elseif not seen[k] then
+      seen[k] = true
+      out[#out + 1] = (w.address == k) and w or (hl.get_window("address:" .. k) or w)
+    end
+  end
+  return out
+end
+
+-- Every mapped window sharing w's tile: w itself, plus its fellow tabs.
+local function tile_members(w)
+  local k = group_key(w)
+  if not k or not w.workspace then return { w } end
+  local out = {}
+  for _, x in ipairs(hl.get_windows({ workspace = w.workspace.id })) do
+    if x.mapped and group_key(x) == k then out[#out + 1] = x end
+  end
+  return #out > 0 and out or { w }
 end
 
 -- Work area of a monitor in logical pixels: rotated outputs (transform 1/3)
@@ -264,7 +350,11 @@ end
 -- move go out in one batch so the window never flashes at its tiled size
 -- behind the floaters.
 local function float_into(w, ws)
-  on_window(hl.dsp.window.tag, w, { tag = "+" .. TAG })
+  -- Tag the whole tile: floating one tab of a group floats them all, and a
+  -- tab left untagged would arrive without the look and read as untouched.
+  for _, m in ipairs(tile_members(w)) do
+    on_window(hl.dsp.window.tag, m, { tag = "+" .. TAG })
+  end
   on_window(hl.dsp.window.float, w, { action = "enable" })
   place_chilled(w, ws)
 end
@@ -281,7 +371,9 @@ end
 -- at 1700,480 it came back dead centre at 2103,345). Without geo we would keep
 -- the size and lose the spot.
 local function adopt_dropped(w, geo)
-  on_window(hl.dsp.window.tag, w, { tag = "+" .. TAG })
+  for _, m in ipairs(tile_members(w)) do
+    on_window(hl.dsp.window.tag, m, { tag = "+" .. TAG })
+  end
   on_window(hl.dsp.window.float, w, { action = "enable" })
   if geo then
     on_window(hl.dsp.window.resize, w, { x = geo.w, y = geo.h })
@@ -365,8 +457,13 @@ local function chase(addr, wsid)
           again = false -- already adopted
         elseif tiled(win) then
           local dest = hl.get_workspace(wsid)
-          if dest and chilled_others(dest, win) > 0 then
-            guarded(function() adopt_dropped(win, last) end)
+          if dest then
+            if chilled_others(dest, win) > 0 and not auto_over(dest, win.address) then
+              guarded(function() adopt_dropped(win, last) end)
+            end
+            -- A drop can land seconds after the move event, long after that
+            -- one's pass: auto looks again now the window has settled.
+            schedule_auto(dest)
           end
           again = false -- it landed; adopted or the workspace is no longer chilled
         else
@@ -389,8 +486,15 @@ end
 -- lets go, and hand it back to the tiling layout. Callers that tile several in
 -- a row must mind the focus order — see the note in unchill().
 local function tile_out(w)
-  on_window(hl.dsp.window.tag, w, { tag = "-" .. TAG })
-  on_window(hl.dsp.window.set_prop, w, { prop = "rounding", value = "unset" })
+  -- The tag sits on every tab of a group (see chill), so it has to come off
+  -- every tab: one left tagged would keep the chilled corners and glass after
+  -- the group tiled, and would still read as chilled to state() and to the
+  -- conversion hooks. Only the representative is unfloated -- that is the one
+  -- dispatch the whole group follows.
+  for _, m in ipairs(tile_members(w)) do
+    on_window(hl.dsp.window.tag, m, { tag = "-" .. TAG })
+    on_window(hl.dsp.window.set_prop, m, { prop = "rounding", value = "unset" })
+  end
   on_window(hl.dsp.window.float, w, { action = "disable" })
 end
 
@@ -542,7 +646,17 @@ end
 -- float dispatch: floating a window changes its at/size, so reading it lazily
 -- inside the apply loop would hand later windows post-float values.
 local function chill(ws)
-  local wins = windows_on(ws, tiled)
+  -- A tab added to a group that is ALREADY chilled arrives floating (the
+  -- group carries it) and untagged, and no event announces it, so the one
+  -- place to catch it is here: re-assert the tag across every chilled tile
+  -- before looking for anything new to chill.
+  for _, w in ipairs(windows_on(ws, chilled)) do
+    for _, m in ipairs(tile_members(w)) do
+      if not has_tag(m) then on_window(hl.dsp.window.tag, m, { tag = "+" .. TAG }) end
+    end
+  end
+  local all = windows_on(ws, tiled)
+  local wins = by_tile(all) -- one per tile: a group is chilled once, not per tab
   -- Only once there is something to chill: with no windows nothing gets
   -- tagged, so toggle() would never see a chilled workspace and never call
   -- unchill() to hand the look back.
@@ -555,9 +669,15 @@ local function chill(ws)
     local ix, iy = math.floor(sw * INSET + 0.5), math.floor(sh * INSET + 0.5)
     geo[i] = { x = x + ix, y = y + iy, w = sw - 2 * ix, h = sh - 2 * iy }
   end
+  -- The tag goes on every window, a group's hidden tabs included: the look
+  -- rides on it, so it has to be there whichever tab is shown, and chilled()
+  -- has to agree about all of them. The geometry goes to the representative
+  -- alone -- the group follows it.
+  for i = 1, #all do
+    on_window(hl.dsp.window.tag, all[i], { tag = "+" .. TAG })
+  end
   for i, w in ipairs(wins) do
     local g = geo[i]
-    on_window(hl.dsp.window.tag, w, { tag = "+" .. TAG })
     on_window(hl.dsp.window.float, w, { action = "enable" })
     on_window(hl.dsp.window.resize, w, { x = g.w, y = g.h })
     on_window(hl.dsp.window.move, w, { x = g.x, y = g.y })
@@ -785,7 +905,8 @@ local function retile_in_reading_order(ws, wins, seed)
 end
 
 local function unchill(ws)
-  local wins = windows_on(ws, chilled)
+  local chilled_wins = windows_on(ws, chilled)
+  local wins = by_tile(chilled_wins) -- a group tiles back as the one tile it is
   if #wins == 0 then return 0 end
 
   -- Focus changes warp the cursor (deferred a frame, so moving it back
@@ -812,7 +933,31 @@ local function unchill(ws)
   -- in which case the tags are still there and a reload would re-push anyway.
   if not any_chilled() then chill_globals_pop() end
   if not ok then error(err) end
-  return #wins
+  return #chilled_wins
+end
+
+-- Tell the shell (bar widget) without it having to poll: Hyprland's `event`
+-- dispatcher puts "custom>>chillmode <ws> on|off" on the event socket. Every
+-- state change goes through here, the ones auto mode makes by itself included,
+-- so the sofa never has to guess.
+local function announce(ws, off)
+  pcall(function()
+    hl.dispatch(hl.dsp.event("chillmode " .. tostring(ws.name) .. " " .. (off and "off" or "on")))
+  end)
+end
+
+-- Self-styled themes (looknfeel's SELF_STYLED_THEMES, e.g. glass-white):
+-- their look engine idles in a third "theme" state. Leaving chill there
+-- hands the desktop to the square omarchy look, so exiting chill feels the
+-- same as on every other theme; entering from omarchy/custom is untouched,
+-- and SUPER+SHIFT+L cycles back to the theme look when wanted. pcall: the
+-- look engine may not exist at all (stock looknfeel).
+local function leave_theme_look()
+  pcall(function()
+    if _G.look and look.current and look.current() == "theme" then
+      look.set("omarchy", true)
+    end
+  end)
 end
 
 local function toggle(selector)
@@ -820,26 +965,122 @@ local function toggle(selector)
   if not ws then return end
   local off = #windows_on(ws, chilled) > 0
   local n = off and unchill(ws) or chill(ws)
-  -- Self-styled themes (looknfeel's SELF_STYLED_THEMES, e.g. glass-white):
-  -- their look engine idles in a third "theme" state. Leaving chill there
-  -- hands the desktop to the square omarchy look, so exiting chill feels the
-  -- same as on every other theme; entering from omarchy/custom is untouched,
-  -- and SUPER+SHIFT+L cycles back to the theme look when wanted. pcall: the
-  -- look engine may not exist at all (stock looknfeel).
-  if off then
-    pcall(function()
-      if _G.look and look.current and look.current() == "theme" then
-        look.set("omarchy", true)
-      end
-    end)
-  end
+  if off then leave_theme_look() end
   notify(string.format("workspace %s — %d window%s %s", ws.name, n, n == 1 and "" or "s",
     off and "back to tiling" or "floating"))
-  -- Tell the shell (bar widget) without it having to poll: Hyprland's `event`
-  -- dispatcher puts "custom>>chillmode <ws> on|off" on the event socket.
-  pcall(function()
-    hl.dispatch(hl.dsp.event("chillmode " .. tostring(ws.name) .. " " .. (off and "off" or "on")))
+  announce(ws, off)
+end
+
+
+-- ── Auto chill: a quiet workspace chills itself ───────────────────────────
+-- With `auto` on, chill mode is not something you press: a workspace chills
+-- itself while it holds at most AUTO_MAX windows, and tiles back the moment
+-- the next one arrives. Drop back under the limit -- close one, hide one,
+-- send one elsewhere -- and it chills again. The key still works; auto simply
+-- takes the workspace back the next time its window count changes -- or the
+-- next time the config is reloaded, when the sweep at the bottom re-asserts
+-- the rule everywhere. That is the one thing to keep in mind.
+--
+-- WHAT COUNTS. The windows chill mode itself acts on: tiled ones, plus the
+-- ones already chilled. A window that was floating on its own is never
+-- touched by chill mode and must not tip the balance either, or opening a
+-- file picker would tile the whole workspace back behind it. Fullscreen
+-- counts (it is a tiled window wearing a hat), so leaving fullscreen cannot
+-- flip the workspace on its own. A GROUP counts as one, however many tabs it
+-- holds: the limit is about how busy the workspace looks, and a group is one
+-- tile in one place. Windows parked on a hidden pile live on a special
+-- workspace and are simply somewhere else; special workspaces -- the piles,
+-- the pads -- are never chilled.
+--
+-- WHY IT WAITS A TICK. Same reason schedule_place does: when the event
+-- arrives the window is not on (or off) the workspace yet, and the layout the
+-- others settle into is the one chill() has to capture. So every trigger only
+-- queues its workspace, AUTO_DELAY later one pass reads the truth off the
+-- compositor and applies it. Several events in the same tick collapse into
+-- that one pass.
+local unloaded = false -- set by unload(); a timer in flight must not act
+local auto_pending = {} -- workspace id -> set of addresses to ignore
+local in_auto = false
+
+local function countable(w) return not w.floating or has_tag(w) end
+
+-- Windows on ws that count, one per group, with `extra` counted even if it
+-- has not landed yet and every address in `skip` left out (a window that is
+-- on its way off). `extra` is counted as one of its own: a window arriving on
+-- the workspace is not in a group there yet.
+local function auto_count(ws, extra, skip)
+  local n, seen = 0, false
+  local groups = {}
+  for _, x in ipairs(windows_on(ws, countable)) do
+    if not (skip and skip[x.address]) then
+      local g = group_key(x)
+      if not g then
+        n = n + 1
+      elseif not groups[g] then
+        groups[g] = true
+        n = n + 1
+      end
+      if extra and x.address == extra then seen = true end
+    end
+  end
+  if extra and not seen and not (skip and skip[extra]) then n = n + 1 end
+  return n
+end
+
+-- Would ws be over the limit with `addr` on it? Asked before adopting a
+-- newcomer into a chilled workspace: one that tips it over must not be
+-- floated in for the frame before the whole workspace tiles back.
+function auto_over(ws, addr)
+  return AUTO and ws ~= nil and not ws.special and auto_count(ws, addr) > AUTO_MAX
+end
+
+-- Bring one workspace to the state auto mode asks for.
+local function auto_apply(ws, skip)
+  if not AUTO or unloaded or in_auto or not ws or ws.special then return end
+  local n = auto_count(ws, nil, skip)
+  local on = #windows_on(ws, chilled) > 0
+  local want = n > 0 and n <= AUTO_MAX
+  if not want and not on then return end -- already tiling, or empty
+  in_auto = true
+  local ok, err = pcall(function()
+    -- Spelled out rather than `want and chill(ws) or unchill(ws)`: chill()
+    -- returns 0 on a workspace that is already chilled with no tiled
+    -- straggler standing there, and `and/or` would fall straight through that
+    -- zero into unchill() -- tiling back the very workspace auto wants
+    -- chilled. A straggler (adopt off, a rule that floated something back) is
+    -- what that repeat chill() is for.
+    local moved
+    if want then moved = chill(ws) else moved = unchill(ws) end
+    if moved > 0 then
+      if not want then leave_theme_look() end
+      announce(ws, not want)
+    end
   end)
+  in_auto = false
+  if not ok then error(err) end
+end
+
+function schedule_auto(ws, exclude)
+  if not AUTO or unloaded or not ws or ws.special then return end
+  local id = ws.id
+  if id == nil then return end
+  local queued = auto_pending[id]
+  if queued then -- a pass is already on its way; fold this trigger into it
+    if exclude then queued[exclude] = true end
+    return
+  end
+  queued = {}
+  if exclude then queued[exclude] = true end
+  auto_pending[id] = queued
+  hl.timer(function()
+    auto_pending[id] = nil
+    -- Nothing else catches a throw inside a timer callback, and the
+    -- workspace may be gone (the last window on it closed).
+    pcall(function()
+      local dest = hl.get_workspace(id)
+      if dest then auto_apply(dest, queued) end
+    end)
+  end, { timeout = AUTO_DELAY, type = "oneshot" })
 end
 
 -- { [workspace name] = number of chilled windows }, for UIs catching up.
@@ -1225,12 +1466,24 @@ end
 local live = { subs = {}, rules = {}, keys = {} }
 
 -- A window born on a chilled workspace joins the vibe instead of tiling
--- full-size behind the floaters.
+-- full-size behind the floaters -- unless it is the one that takes the
+-- workspace over auto mode's limit, in which case floating it in would only
+-- show it among the others for the frame before they all tile back.
 live.subs[#live.subs + 1] = hl.on("window.open", function(w)
-  if not ADOPT then return end
   local ws = w and w.workspace
-  if not ws or not tiled(w) or chilled_others(ws, w) == 0 then return end
-  float_into(w, ws)
+  if not ws then return end
+  if ADOPT and tiled(w) and chilled_others(ws, w) > 0 and not auto_over(ws, w.address) then
+    float_into(w, ws)
+  end
+  schedule_auto(ws)
+end)
+
+-- One window fewer can put the workspace back under the limit. The address is
+-- handed on so the pass ignores it: the window may still be in the list while
+-- it fades out.
+live.subs[#live.subs + 1] = hl.on("window.close", function(w)
+  if not AUTO then return end
+  pcall(function() schedule_auto(w and w.workspace, w and w.address) end)
 end)
 
 -- Carrying a window across the chill line converts it. A chilled window that
@@ -1243,9 +1496,17 @@ end)
 -- the window's own field is mid-move and need not have caught up, while the
 -- argument is by definition where it is going.
 live.subs[#live.subs + 1] = hl.on("window.move_to_workspace", function(w, ws)
-  if not CONVERT then return end
-  ws = ws or (w and w.workspace)
+  local from = w and w.workspace
+  ws = ws or from
   if not w or not ws then return end
+  -- Both ends change: the workspace it left may fall under the limit, the one
+  -- it lands on may rise over it. `from` is the workspace the window is still
+  -- recorded on -- it need not have caught up, so it is only worth a pass of
+  -- its own when it differs from the destination, and the window itself is
+  -- discounted there because it is on its way out.
+  schedule_auto(ws)
+  if from and from.id ~= ws.id then schedule_auto(from, w.address) end
+  if not CONVERT then return end
   guarded(function()
     local others = chilled_others(ws, w)
     if has_tag(w) then
@@ -1253,6 +1514,9 @@ live.subs[#live.subs + 1] = hl.on("window.move_to_workspace", function(w, ws)
     elseif others == 0 then
       return -- destination is not chilled; nothing to join
     elseif tiled(w) then
+      -- Over auto mode's limit it stays tiled and the workspace tiles back
+      -- around it, the same call the open hook makes.
+      if auto_over(ws, w.address) then return end
       float_into(w, ws)
       schedule_place(w, ws)
     else
@@ -1284,6 +1548,7 @@ if HIDE_KEYS then
 end
 
 local function unload()
+  unloaded = true -- an auto pass already on a timer must not chill anything now
   for i = 1, #live.subs do pcall(function() live.subs[i]:remove() end) end
   for i = 1, #live.rules do pcall(function() live.rules[i]:set_enabled(false) end) end
   for i = 1, #live.keys do pcall(hl.unbind, live.keys[i]) end
@@ -1301,10 +1566,35 @@ end
 -- `generation` is the injecting Service instance's stamp: its unload-on-
 -- destruction only fires when this is still its own engine (see Service.qml).
 _G.chillmode = { toggle = toggle, state = state, hide = hide, restore = restore,
-  hidden = function() return hidden end, unload = unload, version = "1.1.0",
+  hidden = function() return hidden end, unload = unload, version = "1.2.0",
   generation = OPTS.generation }
 -- hide.lua's name for the same calls, so scripts written against it keep working.
 _G.hidewin = { hide = hide, restore = restore, stack = function() return hidden end }
+
+-- Auto mode may have been switched on, or its limit changed, while windows
+-- were already open -- and this file is re-run on every reload. So sweep every
+-- workspace that has windows on it once the dust settles. A timer scheduled
+-- while the config is still being PARSED never fires (this file is dofile()d
+-- from hyprland.lua), so the sweep also hangs off config.reloaded, which fires
+-- once the parse is done; whichever arrives first does it, and a second pass
+-- costs nothing because it is idempotent.
+if AUTO then
+  local function auto_sweep()
+    local wins = hl.get_windows()
+    if type(wins) ~= "table" then return end
+    local seen = {}
+    for i = 1, #wins do
+      local w = wins[i]
+      local ws = w.mapped and w.workspace or nil
+      if ws and ws.id and not seen[ws.id] then
+        seen[ws.id] = true
+        schedule_auto(ws)
+      end
+    end
+  end
+  live.subs[#live.subs + 1] = hl.on("config.reloaded", function() pcall(auto_sweep) end)
+  hl.timer(function() pcall(auto_sweep) end, { timeout = 200, type = "oneshot" })
+end
 
 -- A Hyprland reload (or a fresh injection) starts from a clean config, so the
 -- globals chill mode switched on are gone even though the tags survived. Put

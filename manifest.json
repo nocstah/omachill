@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.nocstah.omachill",
   "name": "Omachill",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "author": "Ronny Iversen",
   "license": "MIT",
   "description": "Float every window on the current workspace in place, with glass and soft corners; press again to tile them back exactly where they were.",
@@ -29,6 +29,8 @@
       "gap": 16,
       "adopt": true,
       "convert": true,
+      "auto": false,
+      "autoMax": 3,
       "hide": true,
       "keyHide": "SUPER + H",
       "keyRestore": "SUPER + SHIFT + H",
@@ -106,6 +108,23 @@
         "label": "Moving converts",
         "description": "A window moved onto a chilled workspace joins the floaters; a chilled window moved to a tiling workspace tiles.",
         "defaultValue": true
+      },
+      {
+        "key": "auto",
+        "type": "boolean",
+        "label": "Chill small workspaces",
+        "description": "A workspace chills itself while it holds no more than the limit below, and tiles back the moment the next window arrives. The toggle key still works; auto takes the workspace back the next time its window count changes.",
+        "defaultValue": false
+      },
+      {
+        "key": "autoMax",
+        "type": "integer",
+        "label": "Chill up to (windows)",
+        "description": "How many windows a workspace may hold and still chill itself. Windows that were floating on their own are not counted; hidden ones are somewhere else.",
+        "defaultValue": 3,
+        "min": 1,
+        "max": 12,
+        "step": 1
       },
       {
         "key": "hide",

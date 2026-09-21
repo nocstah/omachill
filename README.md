@@ -4,8 +4,11 @@ Float every window on the current workspace **in place** — each pulled in a
 little on all four sides (10 % by default), with soft corners and glass — and
 press again to tile them back exactly where they were. A look, not a
 re-layout: your arrangement is preserved, the visible change is the air around
-each window. Plus macOS-style hide and restore: `SUPER + H` parks a window,
-`SUPER + SHIFT + H` brings it back exactly where it was.
+each window. Or never press it: switch **auto chill** on and a workspace
+chills itself while it is quiet — up to your limit of windows — and tiles back
+the moment the next one arrives. Plus macOS-style hide and restore:
+`SUPER + H` parks a window, `SUPER + SHIFT + H` brings it back exactly where
+it was.
 
 Only the workspace you press it on changes. Everything else is left alone.
 Companion to [Omaglass](https://github.com/nocstah/omaglass), which draws the
@@ -62,8 +65,44 @@ widget's settings).
 - **Crossing the line converts** — a chilled window moved to a tiling
   workspace tiles; a tiled window moved onto a chilled workspace joins the
   floaters. A window you *drag* in keeps the spot and size you dropped it at.
+- **A group is one window** — tabbed windows share a single tile, so chill
+  mode chills them, tiles them back and counts them as one.
+- **Chills by itself** — optional: a workspace holding no more than your
+  limit of windows is chilled without asking. See below.
 - **Reload-proof** — the `chillmode` window tag is the only state, so a
   Hyprland reload or a shell restart cannot lose track of what is chilled.
+
+## Chill by itself
+
+Switch `auto` on and chill mode stops being something you press. A workspace
+chills itself while it holds at most `autoMax` windows (3 by default) and
+tiles back the moment the next one arrives; drop under the limit again — close
+one, hide one, send one to another desktop — and it chills again. An empty
+workspace counts as chilled: the first window you open on it chills as it
+settles, a frame or two after it lands.
+
+```bash
+omarchy bar set io.github.nocstah.omachill auto true --json
+omarchy bar set io.github.nocstah.omachill autoMax 3 --json
+```
+
+What counts is what chill mode itself touches: the tiled windows plus the ones
+already chilled. A window that was floating on its own — a file picker, a
+dialog, a picture-in-picture — is never counted, so it cannot tile a workspace
+back behind it, and a window on a hidden pile is simply somewhere else.
+Fullscreen counts as the tiled window it is. A **group counts as one**,
+however many tabs it holds — it is one tile in one place, and tiles are what
+the limit is about. Special workspaces — the hidden piles, Omarchy's pads —
+are left alone.
+
+Grouping or ungrouping fires no event of its own, so a group formed while the
+workspace just sits there is taken into account the next time its window count
+changes.
+
+The key still works while auto is on: it chills or tiles back right away, and
+auto takes the workspace over again the next time its window count changes —
+or the next time Hyprland reloads its config, which re-asserts the rule
+everywhere. Auto's own changes are silent, whatever `notify` says.
 
 ## Hide and restore (Cmd+H)
 
@@ -84,8 +123,9 @@ toggle. Right-click opens the panel: the workspace's state with a toggle,
 every chilled workspace with a "tile back", the hidden windows with a
 "restore" each, and behind the cog every setting: the keys, how much a window
 shrinks (`inset`), the newcomer size, the corner radius, the flocking edge
-margin and gap, whether new windows join and moves convert, whether the hide
-keys are bound, notifications, hide-when-idle. Changes apply on the spot. The
+margin and gap, whether new windows join and moves convert, whether a quiet
+workspace chills itself and up to how many windows, whether the hide keys are
+bound, notifications, hide-when-idle. Changes apply on the spot. The
 same settings can be set with `omarchy bar set io.github.nocstah.omachill
 <key> <value>`; they are stored in `~/.config/omarchy/shell.json` like every
 other Omarchy plugin.
@@ -101,6 +141,8 @@ other Omarchy plugin.
 | `edge`, `gap` | `36`, `16` | flocking: margin from the screen edges, breathing room from other windows |
 | `adopt` | `true` | a window opened on a chilled workspace floats in |
 | `convert` | `true` | a window moved across the chill line converts |
+| `auto` | `false` | a workspace chills itself while it holds at most `autoMax` windows |
+| `autoMax` | `3` | how many windows a workspace may hold and still chill itself |
 | `hide` | `true` | bind the hide and restore keys |
 | `keyHide`, `keyRestore` | `SUPER + H`, `SUPER + SHIFT + H` | the hide and restore keys |
 | `notify` | `true` | desktop notification on toggle |

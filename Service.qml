@@ -73,13 +73,30 @@ Item {
   readonly property string generation: String(Date.now()) + "-" + String(Math.floor(Math.random() * 1e9))
 
   // ---- settings -----------------------------------------------------------
-  // A service gets no `settings`; read the widget's entry out of shell.json
-  // (bar.layout.<section>[] first, then plugins[]) the way quickshell.spotify
-  // does. Keys missing there fall back to the manifest defaults.
-  function entryFor(config) {
+  // A service gets no `settings` of its own: the widget's entry has to be
+  // found in the shell's config (bar.layout.<section>[] first, then
+  // plugins[]). WHERE that config can be read depends on how much of the shell
+  // this plugin is handed, and an installed plugin is handed very little:
+  //
+  //   shell.shellConfig   the whole config -- first-party services only
+  //   shell.barConfig     what an installed plugin's scoped shell exposes
+  //                       (services/PluginShellApi.qml has no shellConfig at
+  //                       all): the `bar` object, and only re-assigned from
+  //                       syncPluginApis(), which a settings write does NOT
+  //                       trigger -- so it is a snapshot, not a live view
+  //   shell.json          the file `omarchy bar set` rewrites; watched below
+  //
+  // Until 1.3.0 only the first was read, so on an installed plugin entryFor()
+  // always returned null and EVERY option silently kept its manifest default.
+  // It went unnoticed for as long as the stored values happened to be the
+  // defaults. The file is the one source that is always both readable and
+  // current, so it is consulted before the snapshot.
+  function entryIn(config) {
     if (!config) return null
+    // A whole shell config, or just its `bar` object (shell.barConfig).
+    const bar = config.bar && typeof config.bar === "object" ? config.bar : config
+    const layout = bar && bar.layout ? bar.layout : {}
     const sections = ["left", "center", "right"]
-    const layout = config.bar && config.bar.layout ? config.bar.layout : {}
     for (let s = 0; s < sections.length; s++) {
       const list = layout[sections[s]]
       if (!Array.isArray(list)) continue
@@ -94,6 +111,37 @@ Item {
       if (e && (e.id === pluginId || e === pluginId)) return typeof e === "object" ? e : {}
     }
     return null
+  }
+  function entryFor() {
+    return entryIn(shell ? shell.shellConfig : null)
+      || entryIn(fileConfig)
+      || entryIn(shell ? shell.barConfig : null)
+  }
+
+  // shell.json as it is on disk. `omarchy bar set` (the panel writes through
+  // it) rewrites the whole file, so watching it catches every settings change
+  // whatever the shell hands this service.
+  property var fileConfig: null
+  FileView {
+    id: shellConfigFile
+    path: Quickshell.env("HOME") + "/.config/omarchy/shell.json"
+    watchChanges: true
+    printErrors: false
+    onLoaded: {
+      let parsed = null
+      try { parsed = JSON.parse(text()) } catch (e) { parsed = null }
+      root.fileConfig = parsed
+    }
+    onLoadFailed: root.fileConfig = null
+    onFileChanged: reload()
+  }
+  // The first injection stays with onManifestChanged below -- the file loads
+  // before `manifest` is assigned, and an inject from here would run with the
+  // manifest defaults still standing in. `lastOpts` empty means that first
+  // injection has not happened yet.
+  onFileConfigChanged: {
+    if (!enginePath || !lastOpts) return
+    if (luaOpts(readSettings()) !== lastOpts) inject()
   }
 
   // shell.json holds what `omarchy bar set` was given: a bare `true`/`45`
@@ -111,7 +159,7 @@ Item {
 
   function readSettings() {
     const d = manifest && manifest.barWidget && manifest.barWidget.defaults ? manifest.barWidget.defaults : {}
-    const e = entryFor(shell ? shell.shellConfig : null) || {}
+    const e = entryFor() || {}
     function pick(k, fb) { return e[k] !== undefined && e[k] !== null ? e[k] : (d[k] !== undefined ? d[k] : fb) }
     return {
       keybind: String(pick("keybind", "SUPER + SHIFT + C")),
@@ -122,6 +170,8 @@ Item {
       gap: asNum(pick("gap", 16), 16),
       adopt: asBool(pick("adopt", true), true),
       convert: asBool(pick("convert", true), true),
+      auto: asBool(pick("auto", false), false),
+      autoMax: asNum(pick("autoMax", 3), 3),
       inset: asNum(pick("inset", 10), 10) / 100,
       size: asNum(pick("size", 72), 72) / 100,
       rounding: asNum(pick("rounding", 14), 14),
@@ -138,6 +188,7 @@ Item {
       + ", key_hide = " + luaString(s.keyHide) + ", key_restore = " + luaString(s.keyRestore)
       + ", hide = " + (s.hide ? "true" : "false") + ", edge = " + s.edge + ", gap = " + s.gap
       + ", adopt = " + (s.adopt ? "true" : "false") + ", convert = " + (s.convert ? "true" : "false")
+      + ", auto = " + (s.auto ? "true" : "false") + ", auto_max = " + s.autoMax
       + ", inset = " + s.inset + ", size = " + s.size + ", rounding = " + s.rounding
       + ", notify = " + (s.notify ? "true" : "false")
       + ", generation = " + luaString(generation) + " }"

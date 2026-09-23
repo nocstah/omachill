@@ -226,6 +226,38 @@ local function windows_on(ws, keep) -- mapped windows on ws, optionally filtered
   return out
 end
 
+-- Hyprflip workspace protection v1
+-- Resolve on every call: unloading/reloading the optional plugin must never
+-- leave a Lua closure pointing into an unloaded shared library.
+local card_holds = {} -- short leases for updating an unloaded compositor plugin
+-- Lua is rebuilt during plugin loading. Read leases once on engine load so
+-- the gap before the core can register its own reservations is also covered.
+local card_holds_file = os.getenv("XDG_RUNTIME_DIR") .. "/hyprflip-chill-holds-"
+  .. (os.getenv("HYPRLAND_INSTANCE_SIGNATURE") or "session")
+do
+  local file = io.open(card_holds_file, "r")
+  if file then
+    for line in file:lines() do
+      local workspace, expiry = line:match("^(%d+) (%d+)$")
+      workspace, expiry = tonumber(workspace), tonumber(expiry)
+      if workspace and workspace > 0 and workspace < 2147483648 and expiry
+        and expiry > os.time() and expiry <= os.time() + 120 then
+        card_holds[workspace] = expiry
+      end
+    end
+    file:close()
+  end
+end
+
+local function card_workspace(ws)
+  if not ws or not ws.id then return false end
+  if (card_holds[ws.id] or 0) > os.time() then return true end
+  local plugin = hl.plugin and hl.plugin.hyprflip
+  if not plugin or not plugin.protects_workspace then return false end
+  local ok, protected = pcall(plugin.protects_workspace, ws.id)
+  return ok and protected == true
+end
+
 local function tiled(w) return not w.floating and w.fullscreen == 0 end
 local function chilled(w) return w.floating and has_tag(w) end
 
@@ -325,6 +357,7 @@ end
 -- a window that was just born, or one sent over by a keybind. A window you
 -- DRAGGED in keeps its own geometry instead; see adopt_dropped.
 local function place_chilled(w, ws)
+  if card_workspace(ws) then return end
   local ax, ay, aw, ah = work_area(ws.monitor or hl.get_monitor_at_cursor())
   local others = {}
   for _, o in ipairs(windows_on(ws, chilled)) do
@@ -350,6 +383,7 @@ end
 -- move go out in one batch so the window never flashes at its tiled size
 -- behind the floaters.
 local function float_into(w, ws)
+  if card_workspace(ws) then return end
   -- Tag the whole tile: floating one tab of a group floats them all, and a
   -- tab left untagged would arrive without the look and read as untouched.
   for _, m in ipairs(tile_members(w)) do
@@ -371,6 +405,7 @@ end
 -- at 1700,480 it came back dead centre at 2103,345). Without geo we would keep
 -- the size and lose the spot.
 local function adopt_dropped(w, geo)
+  if card_workspace(w and w.workspace) then return end
   for _, m in ipairs(tile_members(w)) do
     on_window(hl.dsp.window.tag, m, { tag = "+" .. TAG })
   end
@@ -451,7 +486,7 @@ local function chase(addr, wsid)
       -- Nothing catches a throw inside a timer; a window can vanish mid-chase.
       pcall(function()
         local win = hl.get_window("address:" .. addr)
-        if not win or not win.workspace or win.workspace.id ~= wsid then
+        if not win or not win.workspace or win.workspace.id ~= wsid or card_workspace(win.workspace) then
           again = false -- closed, or moved on somewhere else
         elseif has_tag(win) then
           again = false -- already adopted
@@ -646,6 +681,7 @@ end
 -- float dispatch: floating a window changes its at/size, so reading it lazily
 -- inside the apply loop would hand later windows post-float values.
 local function chill(ws)
+  if card_workspace(ws) then return 0 end
   -- A tab added to a group that is ALREADY chilled arrives floating (the
   -- group carries it) and untagged, and no event announces it, so the one
   -- place to catch it is here: re-assert the tag across every chilled tile
@@ -964,6 +1000,10 @@ local function toggle(selector)
   local ws = selector and hl.get_workspace(selector) or current_workspace()
   if not ws then return end
   local off = #windows_on(ws, chilled) > 0
+  if card_workspace(ws) and not off then
+    notify("This workspace has a Hyprflip card. Ungroup the card before enabling Chill mode.")
+    return
+  end
   local n = off and unchill(ws) or chill(ws)
   if off then leave_theme_look() end
   notify(string.format("workspace %s — %d window%s %s", ws.name, n, n == 1 and "" or "s",
@@ -1036,7 +1076,7 @@ end
 
 -- Bring one workspace to the state auto mode asks for.
 local function auto_apply(ws, skip)
-  if not AUTO or unloaded or in_auto or not ws or ws.special then return end
+  if not AUTO or unloaded or in_auto or not ws or ws.special or card_workspace(ws) then return end
   local n = auto_count(ws, nil, skip)
   local on = #windows_on(ws, chilled) > 0
   local want = n > 0 and n <= AUTO_MAX
@@ -1506,7 +1546,7 @@ live.subs[#live.subs + 1] = hl.on("window.move_to_workspace", function(w, ws)
   -- discounted there because it is on its way out.
   schedule_auto(ws)
   if from and from.id ~= ws.id then schedule_auto(from, w.address) end
-  if not CONVERT then return end
+  if not CONVERT or card_workspace(ws) then return end
   guarded(function()
     local others = chilled_others(ws, w)
     if has_tag(w) then
@@ -1565,7 +1605,47 @@ end
 
 -- `generation` is the injecting Service instance's stamp: its unload-on-
 -- destruction only fires when this is still its own engine (see Service.qml).
-_G.chillmode = { toggle = toggle, state = state, hide = hide, restore = restore,
+-- The picker has already reserved the workspace and collected every choice.
+-- Hand over only the selected ungrouped app; leave unrelated floaters alone.
+local function handoff(address)
+  local w = hl.get_window("address:" .. address)
+  if not w or not w.mapped or not card_workspace(w.workspace) then return false end
+  if #tile_members(w) ~= 1 or w.fullscreen ~= 0 then return false end
+  guarded(function() tile_out(w) end)
+  if not any_chilled() then chill_globals_pop() end
+  return true
+end
+
+local function handback(address, x, y, width, height)
+  local w = hl.get_window("address:" .. address)
+  if not w or not w.mapped or #tile_members(w) ~= 1 or w.fullscreen ~= 0 then return false end
+  chill_globals_push()
+  guarded(function()
+    on_window(hl.dsp.window.tag, w, { tag = "+" .. TAG })
+    on_window(hl.dsp.window.float, w, { action = "enable" })
+    on_window(hl.dsp.window.resize, w, { x = width, y = height })
+    on_window(hl.dsp.window.move, w, { x = x, y = y })
+  end)
+  return true
+end
+
+local function hold_workspace(workspace, seconds)
+  if type(workspace) ~= "number" or workspace < 1 then return false end
+  if type(seconds) ~= "number" or seconds < 0 or seconds > 120 then return false end
+  card_holds[workspace] = seconds > 0 and (os.time() + seconds) or nil
+  local temporary = card_holds_file .. ".new"
+  local file = io.open(temporary, "w")
+  if not file then return false end
+  for id, expiry in pairs(card_holds) do
+    if expiry > os.time() then file:write(string.format("%d %d\n", id, expiry)) end
+  end
+  file:close()
+  local ok = os.rename(temporary, card_holds_file)
+  if not ok then os.remove(temporary) return false end
+  return true
+end
+
+_G.chillmode = { hold_workspace = hold_workspace, handoff = handoff, handback = handback, toggle = toggle, state = state, hide = hide, restore = restore,
   hidden = function() return hidden end, unload = unload, version = "1.2.0",
   generation = OPTS.generation }
 -- hide.lua's name for the same calls, so scripts written against it keep working.

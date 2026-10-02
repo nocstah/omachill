@@ -110,7 +110,8 @@ With [Hyprflip](https://github.com/nocstah/hyprflip) 0.3.0-rc.3 or later
 loaded, Chill treats a two-sided card as one window. The card floats in place
 at the chilled size, front and back share that frame, flips and unfolding keep
 it, and tiling back returns the card to its slot. Pressing chill on a
-fullscreen card leaves fullscreen first. hy3 cards stay tiled, and Chill
+fullscreen card leaves fullscreen first, and a card moved onto a chilled
+workspace joins it like a newly opened app. hy3 cards stay tiled, and Chill
 leaves a workspace alone while Hyprflip is creating, moving or updating a card
 there. Without Hyprflip, none of this code runs.
 

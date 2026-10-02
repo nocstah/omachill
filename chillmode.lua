@@ -1705,7 +1705,18 @@ local function hold_workspace(workspace, seconds)
   return true
 end
 
-_G.chillmode = { hold_workspace = hold_workspace, handoff = handoff, handback = handback, toggle = toggle, state = state, hide = hide, restore = restore,
+-- Hyprflip card join v4
+-- A card Hyprflip moved onto a chilled workspace joins it the way a newly
+-- opened app does: tagged, floating, at the chilled size among the others.
+local function join(address)
+  local w = hl.get_window("address:" .. address)
+  if not w or not w.mapped or not w.workspace or w.workspace.special then return false end
+  if #windows_on(w.workspace, chilled) == 0 or card_workspace(w.workspace) then return false end
+  guarded(function() float_into(w, w.workspace) end)
+  return true
+end
+
+_G.chillmode = { join = join, hold_workspace = hold_workspace, handoff = handoff, handback = handback, toggle = toggle, state = state, hide = hide, restore = restore,
   hidden = function() return hidden end, unload = unload, version = "1.2.0",
   generation = OPTS.generation }
 -- hide.lua's name for the same calls, so scripts written against it keep working.

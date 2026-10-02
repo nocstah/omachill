@@ -104,6 +104,16 @@ auto takes the workspace over again the next time its window count changes —
 or the next time Hyprland reloads its config, which re-asserts the rule
 everywhere. Auto's own changes are silent, whatever `notify` says.
 
+## Hyprflip cards
+
+With [Hyprflip](https://github.com/nocstah/hyprflip) 0.3.0-rc.3 or later
+loaded, Chill treats a two-sided card as one window. The card floats in place
+at the chilled size, front and back share that frame, flips and unfolding keep
+it, and tiling back returns the card to its slot. Pressing chill on a
+fullscreen card leaves fullscreen first. hy3 cards stay tiled, and Chill
+leaves a workspace alone while Hyprflip is creating, moving or updating a card
+there. Without Hyprflip, none of this code runs.
+
 ## Hide and restore (Cmd+H)
 
 `SUPER + H` parks the focused window on its monitor's hidden pile, a special

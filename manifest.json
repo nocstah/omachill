@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.nocstah.omachill",
   "name": "Omachill",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "author": "Ronny Iversen",
   "license": "MIT",
   "description": "Float every window on the current workspace in place, with glass and soft corners; press again to tile them back exactly where they were.",

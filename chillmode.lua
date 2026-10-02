@@ -253,9 +253,54 @@ local function card_workspace(ws)
   if not ws or not ws.id then return false end
   if (card_holds[ws.id] or 0) > os.time() then return true end
   local plugin = hl.plugin and hl.plugin.hyprflip
+  local check = plugin and (plugin.chill_blocked or plugin.protects_workspace)
+  if not check then return false end
+  local ok, protected = pcall(check, ws.id)
+  return ok and protected == true
+end
+
+local function card_protected(ws)
+  if not ws or not ws.id then return false end
+  if (card_holds[ws.id] or 0) > os.time() then return true end
+  local plugin = hl.plugin and hl.plugin.hyprflip
   if not plugin or not plugin.protects_workspace then return false end
   local ok, protected = pcall(plugin.protects_workspace, ws.id)
   return ok and protected == true
+end
+
+-- Hyprflip card geometry v2
+-- A native Hyprflip card is one native group, but its visible window fills
+-- only one pane. Measure the whole card so it chills and tiles back whole.
+local function tile_geometry(w)
+  local plugin = hl.plugin and hl.plugin.hyprflip
+  if plugin and plugin.card_box and w and w.address then
+    local ok, x, y, width, height = pcall(plugin.card_box, w.address)
+    if ok and x then return x, y, width, height end
+  end
+  local x, y = xy(w.at)
+  local width, height = xy(w.size)
+  return x, y, width, height
+end
+
+-- Hyprland resizes and moves a group through one window, relative to that
+-- window. A card's window is one pane: place a floating card's frame itself,
+-- and turn a tiled card size into the size of that pane.
+local function place_tile(w, x, y, width, height)
+  local plugin = hl.plugin and hl.plugin.hyprflip
+  if plugin and plugin.card_place and w and w.address then
+    local ok, placed = pcall(plugin.card_place, w.address, x, y, width, height)
+    if ok and placed then return end
+  end
+  on_window(hl.dsp.window.resize, w, { x = width, y = height })
+  on_window(hl.dsp.window.move, w, { x = x, y = y })
+end
+
+local function pane_inset(addr)
+  local w = hl.get_window("address:" .. addr)
+  if not w then return 0, 0 end
+  local _, _, cw, ch = tile_geometry(w)
+  local ww, wh = xy(w.size)
+  return cw - ww, ch - wh
 end
 
 local function tiled(w) return not w.floating and w.fullscreen == 0 end
@@ -300,7 +345,7 @@ local function chilled_size(others, cls, aw, ah)
   if #ref == 0 then return math.floor(aw * SIZE), math.floor(ah * SIZE) end
   local tw, th = 0, 0
   for _, o in ipairs(ref) do
-    local sw, sh = xy(o.size)
+    local _, _, sw, sh = tile_geometry(o)
     tw, th = tw + sw, th + sh
   end
   return math.min(math.floor(tw / #ref + 0.5), aw), math.min(math.floor(th / #ref + 0.5), ah)
@@ -325,8 +370,7 @@ local function flock_spot(others, fw, fh, ax, ay, aw, ah)
   end
   local cx, cy = 0, 0
   for _, o in ipairs(others) do
-    local ox, oy = xy(o.at)
-    local ow, oh = xy(o.size)
+    local ox, oy, ow, oh = tile_geometry(o)
     cx, cy = cx + ox + ow / 2, cy + oy + oh / 2
   end
   cx, cy = cx / #others, cy / #others
@@ -337,8 +381,7 @@ local function flock_spot(others, fw, fh, ax, ay, aw, ah)
       local y = ay + ey + math.floor((ah - fh - 2 * ey) * j / GRID_Y)
       local ov = 0
       for _, o in ipairs(others) do
-        local ox, oy = xy(o.at)
-        local ow, oh = xy(o.size)
+        local ox, oy, ow, oh = tile_geometry(o)
         local dx = math.min(x + fw + GAP, ox + ow) - math.max(x - GAP, ox)
         local dy = math.min(y + fh + GAP, oy + oh) - math.max(y - GAP, oy)
         if dx > 0 and dy > 0 then ov = ov + dx * dy end
@@ -375,8 +418,7 @@ local function place_chilled(w, ws)
   local ey = math.min(EDGE, math.floor((ah - fh) / 2))
   x = math.max(ax + ex, math.min(x, ax + aw - fw - ex))
   y = math.max(ay + ey, math.min(y, ay + ah - fh - ey))
-  on_window(hl.dsp.window.resize, w, { x = fw, y = fh })
-  on_window(hl.dsp.window.move, w, { x = x, y = y })
+  place_tile(w, x, y, fw, fh)
 end
 
 -- Tag + float one window and give it the chilled geometry. Float, resize and
@@ -700,8 +742,7 @@ local function chill(ws)
   chill_globals_push()
   local geo = {}
   for i, w in ipairs(wins) do
-    local x, y = xy(w.at)
-    local sw, sh = xy(w.size)
+    local x, y, sw, sh = tile_geometry(w)
     local ix, iy = math.floor(sw * INSET + 0.5), math.floor(sh * INSET + 0.5)
     geo[i] = { x = x + ix, y = y + iy, w = sw - 2 * ix, h = sh - 2 * iy }
   end
@@ -715,8 +756,7 @@ local function chill(ws)
   for i, w in ipairs(wins) do
     local g = geo[i]
     on_window(hl.dsp.window.float, w, { action = "enable" })
-    on_window(hl.dsp.window.resize, w, { x = g.w, y = g.h })
-    on_window(hl.dsp.window.move, w, { x = g.x, y = g.y })
+    place_tile(w, g.x, g.y, g.w, g.h)
   end
   return #wins
 end
@@ -751,8 +791,7 @@ local TOL = 8 -- px slack when deciding whether an edge lines up
 -- came in by INSET of the window's OWN size, so the width grew by a factor of
 -- 1/(1-2*INSET) and the top-left moved by half the difference.
 local function target_rect(w)
-  local x, y = xy(w.at)
-  local sw, sh = xy(w.size)
+  local x, y, sw, sh = tile_geometry(w)
   local ow = sw / (1 - 2 * INSET)
   local oh = sh / (1 - 2 * INSET)
   return { x = x - (ow - sw) / 2, y = y - (oh - sh) / 2, w = ow, h = oh, win = w }
@@ -834,8 +873,7 @@ local function geom_of(ws, addr)
   local all = hl.get_windows({ workspace = ws.id })
   for i = 1, #all do
     if all[i].address == addr then
-      local x, y = xy(all[i].at)
-      local w, h = xy(all[i].size)
+      local x, y, w, h = tile_geometry(all[i])
       return { x = x, y = y, w = w, h = h }
     end
   end
@@ -887,10 +925,11 @@ local function split_into(ws, node, keep, add)
   local px = math.floor(want * total + 0.5)
   if math.abs(px - gk[dim]) > 2 then
     focus_addr(keep)
+    local dw, dh = pane_inset(keep)
     hl.dispatch(hl.dsp.window.resize({
       window = "address:" .. keep,
-      x = node.axis == "x" and px or gk.w,
-      y = node.axis == "y" and px or gk.h,
+      x = (node.axis == "x" and px or gk.w) - dw,
+      y = (node.axis == "y" and px or gk.h) - dh,
     }))
   end
 end
@@ -996,13 +1035,34 @@ local function leave_theme_look()
   end)
 end
 
+-- Hyprflip fullscreen chill v3
+-- Chill takes precedence over a fullscreen card: leave fullscreen, then chill.
+-- A card that still cannot chill (hy3) gets its fullscreen back.
+local function leave_card_fullscreen(ws)
+  local plugin = hl.plugin and hl.plugin.hyprflip
+  if not plugin or not plugin.card_box then return {} end
+  local left = {}
+  for _, w in ipairs(hl.get_windows({ workspace = ws.id })) do
+    local ok, x = pcall(plugin.card_box, w.address)
+    if w.fullscreen ~= 0 and ok and x then
+      left[#left + 1] = { w = w, mode = w.fullscreen == 1 and "maximized" or "fullscreen" }
+      on_window(hl.dsp.window.fullscreen, w, { action = "unset" })
+    end
+  end
+  return left
+end
+
 local function toggle(selector)
   local ws = selector and hl.get_workspace(selector) or current_workspace()
   if not ws then return end
   local off = #windows_on(ws, chilled) > 0
   if card_workspace(ws) and not off then
-    notify("This workspace has a Hyprflip card. Ungroup the card before enabling Chill mode.")
-    return
+    local left = leave_card_fullscreen(ws)
+    if card_workspace(ws) then
+      for _, e in ipairs(left) do on_window(hl.dsp.window.fullscreen, e.w, { mode = e.mode, action = "set" }) end
+      notify("This workspace's Hyprflip card can't chill. Ungroup an hy3 card first.")
+      return
+    end
   end
   local n = off and unchill(ws) or chill(ws)
   if off then leave_theme_look() end
@@ -1609,7 +1669,7 @@ end
 -- Hand over only the selected ungrouped app; leave unrelated floaters alone.
 local function handoff(address)
   local w = hl.get_window("address:" .. address)
-  if not w or not w.mapped or not card_workspace(w.workspace) then return false end
+  if not w or not w.mapped or not card_protected(w.workspace) then return false end
   if #tile_members(w) ~= 1 or w.fullscreen ~= 0 then return false end
   guarded(function() tile_out(w) end)
   if not any_chilled() then chill_globals_pop() end

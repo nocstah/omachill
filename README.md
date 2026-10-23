@@ -184,6 +184,11 @@ itself, but install and update this plugin with the screen unlocked.
 Omarchy with the Lua-configured Hyprland (0.56+). Blur is switched on while a
 workspace is chilled and put back afterwards.
 
+Nothing else to install: the plugin only calls `hyprctl`, `bash` and
+`notify-send`, which stock Omarchy already ships. [Omaglass](https://github.com/nocstah/omaglass)
+and [Hyprflip](https://github.com/nocstah/hyprflip) are optional; Omachill
+picks them up when they are there and runs the same without them.
+
 **About the glass.** Chilled windows are held fully opaque at the compositor
 level (see the comments in `chillmode.lua` for why), so the frosted look only
 appears through pixels the *application itself* draws translucent — a terminal

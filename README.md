@@ -1,5 +1,7 @@
 # Omachill
 
+[![Marketplace](https://img.shields.io/badge/Omarchy_Marketplace-listed-blue)](https://plugins.omarchy.org/plugin.html?id=io.github.nocstah.omachill)
+
 Float every window on the current workspace **in place** — each pulled in a
 little on all four sides (10 % by default), with soft corners and glass — and
 press again to tile them back exactly where they were. A look, not a

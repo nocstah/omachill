@@ -13,6 +13,7 @@ import Quickshell.Io
 import Quickshell.Hyprland
 import qs.Ui
 import qs.Commons
+import qs.Commons as Commons
 
 BarWidget {
   id: root
@@ -36,18 +37,18 @@ BarWidget {
       if (m[1] === "blue") blue = m[2]
       else if (m[1] === "color4") c4 = m[2]
     }
-    themeBlue = blue || c4 || (Color.accent ? String(Color.accent) : "#3b82f6")
+    themeBlue = blue || c4 || (Commons.Color.accent ? String(Commons.Color.accent) : "#3b82f6")
   }
   FileView {
     id: themeColorsFile
-    path: Color.currentThemePath + "/colors.toml"
+    path: Commons.Color.currentThemePath + "/colors.toml"
     watchChanges: false
     printErrors: false
     onLoaded: root.parseThemeBlue(text())
     onLoadFailed: root.parseThemeBlue("")
   }
   Connections {
-    target: Color
+    target: Commons.Color
     function onAccentChanged() { themeColorsFile.reload() }
     function onForegroundChanged() { themeColorsFile.reload() }
   }

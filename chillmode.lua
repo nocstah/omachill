@@ -76,6 +76,9 @@ local AUTO_DELAY = 60 -- ms to let a workspace settle before auto looks at it
 -- limit. Without these two names as locals up here that call would compile to
 -- a global lookup and find nil.
 local auto_over, schedule_auto
+-- And toggle() has to put back hide()'s strays (see reclaim_strays), which
+-- needs the hidden stack defined far below it.
+local reclaim_strays
 local PLACE_DELAY = 60 -- ms to let a workspace move settle before placing a window
 -- 20ms is one frame at 60Hz: the window is only ever shown at its re-tiled
 -- size for about that long before the drop geometry is replayed, which is
@@ -740,11 +743,24 @@ local function chill(ws)
   -- unchill() to hand the look back.
   if #wins == 0 then return 0 end
   chill_globals_push()
+  -- The scrolling layout lets columns run past the screen edge, and a window
+  -- floated where such a tile sat would chill out of sight (2026-11-01: one
+  -- landed wholly on the next monitor's side). Pull each rect inside the work
+  -- area; on dwindle every tile is already inside and nothing moves.
+  local mon = ws.monitor or hl.get_monitor_at_cursor()
+  local ax, ay, aw, ah
+  if mon then ax, ay, aw, ah = work_area(mon) end
   local geo = {}
   for i, w in ipairs(wins) do
     local x, y, sw, sh = tile_geometry(w)
     local ix, iy = math.floor(sw * INSET + 0.5), math.floor(sh * INSET + 0.5)
-    geo[i] = { x = x + ix, y = y + iy, w = sw - 2 * ix, h = sh - 2 * iy }
+    local g = { x = x + ix, y = y + iy, w = sw - 2 * ix, h = sh - 2 * iy }
+    if ax then
+      g.w, g.h = math.min(g.w, aw), math.min(g.h, ah)
+      g.x = math.max(ax, math.min(g.x, ax + aw - g.w))
+      g.y = math.max(ay, math.min(g.y, ay + ah - g.h))
+    end
+    geo[i] = g
   end
   -- The tag goes on every window, a group's hidden tabs included: the look
   -- rides on it, so it has to be there whichever tab is shown, and chilled()
@@ -1055,6 +1071,7 @@ end
 local function toggle(selector)
   local ws = selector and hl.get_workspace(selector) or current_workspace()
   if not ws then return end
+  pcall(reclaim_strays, ws)
   local off = #windows_on(ws, chilled) > 0
   if card_workspace(ws) and not off then
     local left = leave_card_fullscreen(ws)
@@ -1337,6 +1354,44 @@ local function load_hidden()
   end
 end
 pcall(load_hidden)
+
+-- hide() floats a tile so it can ride the pile, and restore() tiles it again.
+-- A window that leaves the pile any other way -- its monitor went away and
+-- Hyprland pushed the pile's windows onto another workspace -- arrives as a
+-- plain floater, and chill mode never touches those, so the key skipped it
+-- for good (2026-11-01: three ex-tiles stranded on workspace 4, half above the
+-- screen). Its stack entry still says what it was: a former tile goes back
+-- into the layout, and the entry goes, since the window is no longer hidden.
+-- Each one tiles next to the one before it, never next to a floater (see the
+-- focus note in unchill).
+function reclaim_strays(ws)
+  if not ws or ws.special then return end
+  local anchor = windows_on(ws, tiled)[1]
+  local focused, moved = hl.get_active_window(), false
+  local no_warps = hl.get_config("cursor.no_warps") == true
+  hl.config({ cursor = { no_warps = true } })
+  local ok, err = pcall(function()
+    for k = #hidden, 1, -1 do
+      local e = hidden[k]
+      local w = hl.get_window("address:" .. e.addr)
+      if w and w.mapped and not on_pile(w) and w.workspace and w.workspace.id == ws.id then
+        table.remove(hidden, k)
+        moved = true
+        if w.floating and (e.chilled or not e.floating) then
+          if anchor then focus_addr(anchor.address) end
+          tile_out(w)
+          anchor = w
+        end
+      end
+    end
+  end)
+  if moved then
+    save_hidden()
+    if focused then focus_addr(focused.address) end
+  end
+  hl.config({ cursor = { no_warps = no_warps } })
+  if not ok then error(err) end
+end
 
 local function hide(addr)
   local w = addr and hl.get_window("address:" .. addr) or hl.get_active_window()

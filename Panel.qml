@@ -215,6 +215,7 @@ Panel {
                   anchors.right: wsButton.left
                   anchors.rightMargin: Style.space(12)
                   anchors.verticalCenter: parent.verticalCenter
+                  textFormat: Text.PlainText
                   text: "Workspace " + modelData.name + "  ·  " + modelData.count + (modelData.count === 1 ? " window" : " windows")
                   color: Color.popups.text
                   elide: Text.ElideRight
@@ -263,6 +264,9 @@ Panel {
                   anchors.verticalCenter: parent.verticalCenter
                   spacing: Style.space(1)
                   Text {
+                    // PlainText: a window title or class is set by whatever runs in the window,
+                    // and AutoText would take markup in it for rich text and fetch its images.
+                    textFormat: Text.PlainText
                     text: String(modelData.title || modelData.class || modelData.address)
                     color: Color.popups.text
                     width: parent.width
@@ -271,6 +275,7 @@ Panel {
                     font.pixelSize: Style.font.body
                   }
                   Text {
+                    textFormat: Text.PlainText
                     text: String(modelData.class || "") + (modelData.pile ? "  ·  " + modelData.pile : "")
                     visible: text !== ""
                     color: Color.popups.text
